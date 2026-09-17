@@ -1,0 +1,8 @@
+{
+  "name": "vikunja",
+  "displayName": "Vikunja task board",
+  "description": "The shared Vikunja task board for Miguel and the coding agents: a skill for when and how to use the board, and `vk`, a client that prints one line per task.",
+  "author": { "name": "MaybloomTech" },
+  "repository": "https://github.com/MaybloomTech/vikunja-skill",
+  "keywords": ["vikunja", "tasks", "kanban"]
+}

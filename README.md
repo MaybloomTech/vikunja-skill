@@ -1,29 +1,45 @@
 # vikunja-skill
 
-A Claude Code skill for the shared Vikunja task board: `SKILL.md` (when and
-how the agents use the board) and `vk`, a small Vikunja client that prints
-one line per task. Python standard library only; Vikunja API v2 (2.4+).
+A Claude Code plugin for the shared Vikunja task board, and the marketplace
+that serves it:
 
-The repo root is the skill directory, so a checkout is an install.
+```
+.claude-plugin/marketplace.json   this repo as a one-plugin marketplace
+.claude-plugin/plugin.json        the plugin, `vikunja`
+skills/vikunja/SKILL.md           when and how the agents use the board
+bin/vk                            the client; on the Bash tool's PATH while the plugin is enabled
+```
+
+`vk` is a small Vikunja client that prints one line per task. Python
+standard library only; Vikunja API v2 (2.4+). The skill is what makes it
+more than a CLI: the session routine, the project layout and the label
+conventions live there.
 
 ## Install
 
 ```
-git clone git@github.com:MaybloomTech/vikunja-skill.git ~/.claude/skills/vikunja
+claude plugin marketplace add git@github.com:MaybloomTech/vikunja-skill.git
+claude plugin install vikunja@vikunja-skill
 ```
+
+(or `/plugin marketplace add …` and `/plugin install …` inside a session).
+The repo is private, so the SSH URL; the machine's GitHub key needs read
+access. The skill shows up as `vikunja:vikunja`.
 
 Then give the machine its own token:
 
 1. Sign in to Vikunja as `claude`, Settings → API Tokens, new token named
    after the host. Scopes: projects, tasks (incl. comments), labels,
    assignees, buckets/views.
-2. `~/.claude/skills/vikunja/vk init <token>` stores it in
+2. `vk init <token>` from a Claude Code session (`! vk init <token>`), or
+   `bin/vk init <token>` from a checkout. It stores the token in
    `~/.config/vikunja/token` (0600) and prints how many projects it can see.
 
 The token never goes in a repo. One token per machine, so a lost laptop is
 one token to revoke.
 
-Optional, to type `vk` in a shell: `ln -s ~/.claude/skills/vikunja/vk ~/.local/bin/vk`.
+To type `vk` in an ordinary shell, clone the repo anywhere and
+`ln -s <checkout>/bin/vk ~/.local/bin/vk`.
 
 ## Reaching the board
 
@@ -36,11 +52,16 @@ the WAN side. `vk init <token> --url URL` (or `VIKUNJA_URL`, or
 
 ## Update
 
+`plugin.json` carries no `version` on purpose: every commit on `main` is a
+release.
+
 ```
-git -C ~/.claude/skills/vikunja pull
+claude plugin marketplace update vikunja-skill
+claude plugin update vikunja@vikunja-skill
 ```
 
 Changes go through a PR here; `SKILL.md` documents every command, so keep
-it in step with `vk`.
+it in step with `vk`. `claude plugin validate .` checks the manifests, and
+`claude --plugin-dir .` tries a working copy without installing it.
 
 Moved out of MaybloomTech/infra (`skills/vikunja`, MaybloomTech/infra#52).

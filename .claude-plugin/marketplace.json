@@ -1,0 +1,16 @@
+{
+  "name": "vikunja-skill",
+  "owner": {
+    "name": "MaybloomTech"
+  },
+  "metadata": {
+    "description": "The Vikunja task board skill and its `vk` client."
+  },
+  "plugins": [
+    {
+      "name": "vikunja",
+      "source": "./",
+      "description": "Skill + `vk` client for the shared Vikunja task board."
+    }
+  ]
+}
