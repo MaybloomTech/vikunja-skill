@@ -3,7 +3,9 @@
 
 Config (first found wins):
   VIKUNJA_TOKEN / ~/.config/vikunja/token   API token (Settings -> API Tokens)
-  VIKUNJA_URL   / ~/.config/vikunja/url     default https://tasks.maybloom.space
+  VIKUNJA_URL   / ~/.config/vikunja/url     the instance, e.g. https://tasks.example.org
+  VIKUNJA_CONVENTIONS                       project whose description holds the
+                                            team conventions (default: Agents)
 
 Only the Python standard library; Vikunja API v2 (2.4+).
 """
@@ -31,8 +33,9 @@ def cfg(name, default=None):
         return default
 
 
-URL = (os.environ.get("VIKUNJA_URL") or cfg("url") or "https://tasks.maybloom.space").rstrip("/")
+URL = (os.environ.get("VIKUNJA_URL") or cfg("url") or "").rstrip("/")
 TOKEN = os.environ.get("VIKUNJA_TOKEN") or cfg("token")
+CONVENTIONS = os.environ.get("VIKUNJA_CONVENTIONS") or "Agents"
 API = URL + "/api/v2"
 
 
@@ -43,6 +46,8 @@ class ApiError(Exception):
 
 
 def call(method, path, body=None, params=None, ctype="application/json"):
+    if not URL:
+        sys.exit("no instance URL: run `vk init <token> --url https://...` or set VIKUNJA_URL")
     if not TOKEN:
         sys.exit("no token: run `vk init <token>` or set VIKUNJA_TOKEN")
     url = API + path
@@ -80,21 +85,50 @@ def items(path, params=None):
 # ---------- formatting ----------
 
 def to_html(text):
-    """Vikunja stores descriptions/comments as HTML; keep plain text readable."""
+    """Vikunja stores descriptions/comments as HTML. Plain text goes in as
+    paragraphs; `# ` headings, `- ` / `1. ` lists and `code` spans keep their
+    shape, so to_text() gives the same text back."""
     if not text or text.lstrip().startswith("<"):
         return text or ""
-    paras = [p.strip() for p in re.split(r"\n\s*\n", text.strip())]
-    return "".join("<p>" + html.escape(p).replace("\n", "<br>") + "</p>" for p in paras)
+
+    def inline(s):
+        return re.sub(r"`([^`]+)`", r"<code>\1</code>", html.escape(s))
+
+    out = []
+    for block in re.split(r"\n\s*\n", text.strip()):
+        lines = block.strip().split("\n")
+        head = re.match(r"(#{1,6}) (.*)", block) if len(lines) == 1 else None
+        if head:
+            n = len(head.group(1))
+            out.append(f"<h{n}>{inline(head.group(2))}</h{n}>")
+        elif all(l.startswith("- ") for l in lines):
+            out.append("<ul>" + "".join(f"<li>{inline(l[2:])}</li>" for l in lines) + "</ul>")
+        elif all(re.match(r"\d+\. ", l) for l in lines):
+            out.append("<ol>" + "".join(f"<li>{inline(l.split('. ', 1)[1])}</li>" for l in lines) + "</ol>")
+        else:
+            out.append("<p>" + "<br>".join(inline(l) for l in lines) + "</p>")
+    return "".join(out)
 
 
 def to_text(h):
     if not h:
         return ""
+    h = re.sub(r"<li[^>]*>\s*<p[^>]*>(.*?)</p>\s*</li>", r"<li>\1</li>", h, flags=re.S)  # editor wraps items in <p>
+    h = re.sub(r"<h(\d)[^>]*>", lambda m: "#" * int(m.group(1)) + " ", h)
+    h = re.sub(r"</h\d>", "\n\n", h)
+
+    def ol(m):
+        items = re.findall(r"<li[^>]*>(.*?)</li>", m.group(1), flags=re.S)
+        return "".join(f"{i}. {t}\n" for i, t in enumerate(items, 1)) + "\n"
+    h = re.sub(r"<ol[^>]*>(.*?)</ol>", ol, h, flags=re.S)
+    h = re.sub(r"<li[^>]*>", "- ", h)
+    h = re.sub(r"</li>", "\n", h)
+    h = re.sub(r"</(ul|p|div|pre)>", "\n\n", h)
     h = re.sub(r"<br\s*/?>", "\n", h)
-    h = re.sub(r"</(p|div|li|h\d)>", "\n", h)
-    h = re.sub(r"<li>", "- ", h)
+    h = re.sub(r"</?code[^>]*>", "`", h)
     h = re.sub(r"<[^>]+>", "", h)
-    return html.unescape(h).strip()
+    h = re.sub(r"[ \t]+\n", "\n", html.unescape(h))
+    return re.sub(r"\n{3,}", "\n\n", h).strip()
 
 
 def date(s):
@@ -184,17 +218,21 @@ def get_task(tid):
     return r.get("task", r) if isinstance(r, dict) and "task" in r else r
 
 
-def update_task(tid, changes):
+def update(path, changes, get):
     """JSON Patch, with a GET+PUT fallback if the server declines it."""
     ops = [{"op": "replace", "path": "/" + k, "value": v} for k, v in changes.items()]
     try:
-        return call("PATCH", f"/tasks/{tid}", ops, ctype="application/json-patch+json") or get_task(tid)
+        return call("PATCH", path, ops, ctype="application/json-patch+json") or get()
     except ApiError as e:
         if e.code not in (400, 405, 415, 422):
             raise
-    t = get_task(tid)
+    t = get()
     t.update(changes)
-    return call("PUT", f"/tasks/{tid}", t)
+    return call("PUT", path, t)
+
+
+def update_task(tid, changes):
+    return update(f"/tasks/{tid}", changes, lambda: get_task(tid))
 
 
 # ---------- commands ----------
@@ -211,6 +249,33 @@ def cmd_init(a):
     TOKEN = a.token.strip()
     ps = load_projects()
     print(f"ok: {len(ps)} projects visible at {URL}")
+
+
+def cmd_conventions(a):
+    """The team's conventions live on the instance itself, as the description
+    of one project (default title `Agents`), so every machine with a token
+    sees the same text and the humans edit it in the Vikunja UI."""
+    projects = load_projects()
+    key = CONVENTIONS.lower()
+    hits = [p for p in projects.values()
+            if key in (p["title"].lower(), p["path"].lower(), str(p["id"]))]
+    if a.set:
+        text = sys.stdin.read() if a.set == "-" else open(a.set).read()
+        if hits:
+            pid = hits[0]["id"]
+            update(f"/projects/{pid}", {"description": to_html(text)}, lambda: call("GET", f"/projects/{pid}"))
+        else:
+            p = call("POST", "/projects", {"title": CONVENTIONS, "description": to_html(text)})
+            pid = p["id"]
+        print(f"conventions written to project {pid} ({CONVENTIONS})")
+        return
+    if not hits:
+        print(f"(no conventions: no project named {CONVENTIONS!r}; write them with `vk conventions --set FILE`)")
+    else:
+        print(to_text(call("GET", f"/projects/{hits[0]['id']}").get("description")) or "(empty)")
+    local = cfg("conventions.md")
+    if local:
+        print("\n## Local additions (~/.config/vikunja/conventions.md)\n\n" + local)
 
 
 def cmd_projects(a):
@@ -411,6 +476,10 @@ def main():
 
     s = sp.add_parser("init", help="store the API token (and optional URL), test it")
     s.add_argument("token"); s.add_argument("--url"); s.set_defaults(f=cmd_init)
+
+    s = sp.add_parser("conventions", help="the team's conventions (description of the Agents project)")
+    s.add_argument("--set", metavar="FILE", help="write them from FILE (- for stdin); creates the project")
+    s.set_defaults(f=cmd_conventions)
 
     s = sp.add_parser("projects", help="list projects as Parent/Child with ids"); s.set_defaults(f=cmd_projects)
 
