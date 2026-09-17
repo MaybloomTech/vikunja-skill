@@ -1,0 +1,466 @@
+#!/usr/bin/env python3
+"""vk: a small Vikunja client for coding agents. Prints one line per task.
+
+Config (first found wins):
+  VIKUNJA_TOKEN / ~/.config/vikunja/token   API token (Settings -> API Tokens)
+  VIKUNJA_URL   / ~/.config/vikunja/url     default https://tasks.maybloom.space
+
+Only the Python standard library; Vikunja API v2 (2.4+).
+"""
+import argparse
+import datetime as dt
+import html
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+CFG = os.path.expanduser("~/.config/vikunja")
+NULL_DATE = "0001-01-01T00:00:00Z"
+PRIO = {0: "", 1: "P1", 2: "P2", 3: "P3", 4: "P4", 5: "P5"}
+
+
+def cfg(name, default=None):
+    try:
+        with open(os.path.join(CFG, name)) as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        return default
+
+
+URL = (os.environ.get("VIKUNJA_URL") or cfg("url") or "https://tasks.maybloom.space").rstrip("/")
+TOKEN = os.environ.get("VIKUNJA_TOKEN") or cfg("token")
+API = URL + "/api/v2"
+
+
+class ApiError(Exception):
+    def __init__(self, code, text):
+        super().__init__(f"HTTP {code}: {text}")
+        self.code = code
+
+
+def call(method, path, body=None, params=None, ctype="application/json"):
+    if not TOKEN:
+        sys.exit("no token: run `vk init <token>` or set VIKUNJA_TOKEN")
+    url = API + path
+    if params:
+        url += "?" + urllib.parse.urlencode(params, doseq=True)
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method, headers={
+        "Authorization": "Bearer " + TOKEN,
+        "Content-Type": ctype,
+        "Accept": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            raw = r.read()
+            return json.loads(raw) if raw else None
+    except urllib.error.HTTPError as e:
+        if e.code == 304:  # Not Modified: the value was already what we asked for
+            return None
+        raise ApiError(e.code, e.read().decode(errors="replace")[:400].strip())
+
+
+def items(path, params=None):
+    """Collect every page of a v2 paginated envelope."""
+    out, page = [], 1
+    while True:
+        r = call("GET", path, params={**(params or {}), "page": page, "per_page": 50})
+        if isinstance(r, list):
+            return r
+        out += r.get("items") or []
+        if page >= (r.get("total_pages") or 1):
+            return out
+        page += 1
+
+
+# ---------- formatting ----------
+
+def to_html(text):
+    """Vikunja stores descriptions/comments as HTML; keep plain text readable."""
+    if not text or text.lstrip().startswith("<"):
+        return text or ""
+    paras = [p.strip() for p in re.split(r"\n\s*\n", text.strip())]
+    return "".join("<p>" + html.escape(p).replace("\n", "<br>") + "</p>" for p in paras)
+
+
+def to_text(h):
+    if not h:
+        return ""
+    h = re.sub(r"<br\s*/?>", "\n", h)
+    h = re.sub(r"</(p|div|li|h\d)>", "\n", h)
+    h = re.sub(r"<li>", "- ", h)
+    h = re.sub(r"<[^>]+>", "", h)
+    return html.unescape(h).strip()
+
+
+def date(s):
+    if not s or s.startswith("0001-"):
+        return ""
+    return s[:10]
+
+
+def fmt_task(t, projects=None):
+    proj = ""
+    if projects:
+        p = projects.get(t.get("project_id"))
+        proj = p["path"].split("/")[-1] if p else str(t.get("project_id"))
+    who = ",".join("@" + a["username"] for a in t.get("assignees") or [])
+    labels = ",".join(l["title"] for l in t.get("labels") or [])
+    due = date(t.get("due_date"))
+    cols = [f"#{t['id']}", PRIO.get(t.get("priority", 0), ""), proj, who,
+            f"[{labels}]" if labels else "", f"due {due}" if due else "",
+            "DONE" if t.get("done") else "", t["title"]]
+    return "  ".join(c for c in cols if c)
+
+
+# ---------- lookups ----------
+
+def load_projects():
+    """id -> {id, title, parent, path}. path is Parent/Child."""
+    ps = {p["id"]: p for p in items("/projects", {"is_archived": "false"})}
+
+    def path(p):
+        par = p.get("parent_project_id")
+        return (path(ps[par]) + "/" if par and par in ps else "") + p["title"]
+    return {i: {"id": i, "title": p["title"], "parent": p.get("parent_project_id"), "path": path(p)}
+            for i, p in ps.items()}
+
+
+def find_project(name, projects=None):
+    projects = projects or load_projects()
+    if name.isdigit() and int(name) in projects:
+        return projects[int(name)]
+    n = name.lower()
+    full = [p for p in projects.values() if p["path"].lower() == n]
+    if len(full) == 1:
+        return full[0]
+    last = [p for p in projects.values() if p["title"].lower() == n]
+    if len(last) == 1:
+        return last[0]
+    if len(last) > 1:
+        sys.exit(f"ambiguous project {name!r}: " + ", ".join(p["path"] for p in last))
+    sys.exit(f"no project {name!r}; try `vk projects`")
+
+
+def find_user(project_id, name):
+    for u in items(f"/projects/{project_id}/users/search", {"q": name}):
+        if u.get("username", "").lower() == name.lower():
+            return u
+    sys.exit(f"no user {name!r} with access to project {project_id}")
+
+
+def find_label(title, create=False):
+    for l in items("/labels"):
+        if l["title"].lower() == title.lower():
+            return l
+    if create:
+        return call("POST", "/labels", {"title": title})
+    sys.exit(f"no label {title!r}; try `vk labels`")
+
+
+def kanban(project_id):
+    """(view, buckets) of the project's kanban view."""
+    views = [v for v in items(f"/projects/{project_id}/views") if v.get("view_kind") == "kanban"]
+    if not views:
+        sys.exit(f"project {project_id} has no kanban view")
+    v = views[0]
+    return v, items(f"/projects/{project_id}/views/{v['id']}/buckets")
+
+
+def find_bucket(project_id, name):
+    v, buckets = kanban(project_id)
+    for b in buckets:
+        if b["title"].lower() == name.lower():
+            return v, b
+    sys.exit(f"no bucket {name!r}; have: " + ", ".join(b["title"] for b in buckets))
+
+
+def get_task(tid):
+    r = call("GET", f"/tasks/{tid}")
+    return r.get("task", r) if isinstance(r, dict) and "task" in r else r
+
+
+def update_task(tid, changes):
+    """JSON Patch, with a GET+PUT fallback if the server declines it."""
+    ops = [{"op": "replace", "path": "/" + k, "value": v} for k, v in changes.items()]
+    try:
+        return call("PATCH", f"/tasks/{tid}", ops, ctype="application/json-patch+json") or get_task(tid)
+    except ApiError as e:
+        if e.code not in (400, 405, 415, 422):
+            raise
+    t = get_task(tid)
+    t.update(changes)
+    return call("PUT", f"/tasks/{tid}", t)
+
+
+# ---------- commands ----------
+
+def cmd_init(a):
+    os.makedirs(CFG, mode=0o700, exist_ok=True)
+    fd = os.open(os.path.join(CFG, "token"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(a.token.strip() + "\n")
+    if a.url:
+        with open(os.path.join(CFG, "url"), "w") as f:
+            f.write(a.url.strip() + "\n")
+    global TOKEN
+    TOKEN = a.token.strip()
+    ps = load_projects()
+    print(f"ok: {len(ps)} projects visible at {URL}")
+
+
+def cmd_projects(a):
+    for p in sorted(load_projects().values(), key=lambda p: p["path"].lower()):
+        print(f"{p['id']:>4}  {p['path']}")
+
+
+def cmd_ls(a):
+    projects = load_projects()
+    parts = []
+    if not a.all:
+        parts.append("done = false")
+    if a.project:
+        p = find_project(a.project, projects)
+        ids = [p["id"]] + [c["id"] for c in projects.values() if c["parent"] == p["id"]]
+        parts.append("project in " + ", ".join(map(str, ids)))
+    if a.assignee:
+        parts.append(f"assignees in '{a.assignee}'")
+    if a.label:
+        parts.append(f"labels in {find_label(a.label)['id']}")
+    params = {"sort_by": ["priority", "id"], "order_by": ["desc", "asc"]}
+    if parts:
+        params["filter"] = " && ".join(parts)
+    tasks = items("/tasks", params)
+    if a.json:
+        print(json.dumps(tasks, indent=1))
+        return
+    for t in tasks:
+        print(fmt_task(t, projects))
+    if not tasks:
+        print("(no tasks)")
+
+
+def cmd_show(a):
+    projects = load_projects()
+    for tid in a.id:
+        t = get_task(tid)
+        if a.json:
+            print(json.dumps(t, indent=1))
+            continue
+        print(fmt_task(t, projects))
+        p = projects.get(t.get("project_id"))
+        meta = [f"project {p['path']}" if p else "", f"created {date(t.get('created'))}",
+                f"updated {date(t.get('updated'))}", f"done {date(t.get('done_at'))}" if t.get("done") else ""]
+        print("  " + " | ".join(m for m in meta if m))
+        if t.get("description"):
+            print("  " + to_text(t["description"]).replace("\n", "\n  "))
+        for c in items(f"/tasks/{tid}/comments", {"order_by": "asc"}):
+            who = (c.get("author") or {}).get("username", "?")
+            print(f"  > {date(c.get('created'))} {who}: " + to_text(c.get("comment")).replace("\n", "\n    "))
+        print()
+
+
+def apply_extras(t, a, projects):
+    """Assignees, labels, bucket after create/edit."""
+    pid = t["project_id"]
+    for name in (a.assignee or []):
+        u = find_user(pid, name)
+        try:
+            call("POST", f"/tasks/{t['id']}/assignees", {"user_id": u["id"]})
+        except ApiError as e:
+            if e.code != 400:
+                raise  # 400 = already assigned
+    for name in (a.label or []):
+        l = find_label(name, create=True)
+        try:
+            call("POST", f"/tasks/{t['id']}/labels", {"label_id": l["id"]})
+        except ApiError as e:
+            if e.code != 400:
+                raise
+    if a.bucket:
+        v, b = find_bucket(pid, a.bucket)
+        call("PUT", f"/projects/{pid}/views/{v['id']}/buckets/{b['id']}/tasks", {"task_id": t["id"]})
+
+
+def cmd_add(a):
+    projects = load_projects()
+    p = find_project(a.project, projects)
+    body = {"title": a.title}
+    if a.desc:
+        body["description"] = to_html(a.desc)
+    if a.priority is not None:
+        body["priority"] = a.priority
+    if a.due:
+        body["due_date"] = a.due + "T12:00:00Z" if len(a.due) == 10 else a.due
+    t = call("POST", f"/projects/{p['id']}/tasks", body)
+    apply_extras(t, a, projects)
+    print(fmt_task(get_task(t["id"]), projects))
+
+
+def cmd_edit(a):
+    projects = load_projects()
+    changes = {}
+    if a.title:
+        changes["title"] = a.title
+    if a.desc is not None:
+        changes["description"] = to_html(a.desc)
+    if a.priority is not None:
+        changes["priority"] = a.priority
+    if a.due is not None:
+        changes["due_date"] = NULL_DATE if a.due in ("", "none") else (
+            a.due + "T12:00:00Z" if len(a.due) == 10 else a.due)
+    if a.project:
+        changes["project_id"] = find_project(a.project, projects)["id"]
+    for tid in a.id:
+        t = update_task(tid, changes) if changes else get_task(tid)
+        apply_extras(t, a, projects)
+        for name in (a.unassign or []):
+            u = find_user(t["project_id"], name)
+            call("DELETE", f"/tasks/{tid}/assignees/{u['id']}")
+        for name in (a.unlabel or []):
+            call("DELETE", f"/tasks/{tid}/labels/{find_label(name)['id']}")
+        print(fmt_task(get_task(tid), projects))
+
+
+def cmd_done(a):
+    projects = load_projects()
+    for tid in a.id:
+        if a.comment:
+            call("POST", f"/tasks/{tid}/comments", {"comment": to_html(a.comment)})
+        print(fmt_task(update_task(tid, {"done": not a.undo}), projects))
+
+
+def cmd_comment(a):
+    call("POST", f"/tasks/{a.id}/comments", {"comment": to_html(a.text)})
+    print(f"#{a.id} commented")
+
+
+def cmd_mv(a):
+    projects = load_projects()
+    t = get_task(a.id)
+    v, b = find_bucket(t["project_id"], a.bucket)
+    call("PUT", f"/projects/{t['project_id']}/views/{v['id']}/buckets/{b['id']}/tasks", {"task_id": t["id"]})
+    print(f"#{a.id} -> {b['title']}")
+
+
+def cmd_recent(a):
+    """What changed: tasks updated since a date, with their newer comments."""
+    projects = load_projects()
+    since = (dt.date.today() - dt.timedelta(days=a.days)).isoformat()
+    params = {"filter": f"updated >= '{since}'", "sort_by": ["updated"], "order_by": ["desc"]}
+    if a.project:
+        p = find_project(a.project, projects)
+        ids = [p["id"]] + [c["id"] for c in projects.values() if c["parent"] == p["id"]]
+        params["filter"] += " && project in " + ", ".join(map(str, ids))
+    for t in items("/tasks", params):
+        print(fmt_task(t, projects) + f"  (upd {date(t.get('updated'))})")
+        for c in items(f"/tasks/{t['id']}/comments", {"order_by": "asc"}):
+            if (c.get("created") or "") >= since:
+                who = (c.get("author") or {}).get("username", "?")
+                print(f"  > {date(c.get('created'))} {who}: " + to_text(c.get("comment")).replace("\n", "\n    "))
+
+
+def cmd_labels(a):
+    for l in items("/labels"):
+        print(f"{l['id']:>4}  {l['title']}")
+
+
+def cmd_buckets(a):
+    p = find_project(a.project)
+    v, buckets = kanban(p["id"])
+    for b in sorted(buckets, key=lambda b: b.get("position", 0)):
+        flag = "  (done bucket)" if b["id"] == v.get("done_bucket_id") else ""
+        print(f"{b['id']:>4}  {b['title']}{flag}")
+
+
+def cmd_mkproject(a):
+    projects = load_projects()
+    body = {"title": a.title}
+    if a.parent:
+        body["parent_project_id"] = find_project(a.parent, projects)["id"]
+    p = call("POST", "/projects", body)
+    print(f"{p['id']:>4}  {a.parent + '/' if a.parent else ''}{p['title']}")
+
+
+def cmd_mkbucket(a):
+    p = find_project(a.project)
+    v, buckets = kanban(p["id"])
+    for title in a.title:
+        if any(b["title"].lower() == title.lower() for b in buckets):
+            print(f"bucket {title} exists")
+            continue
+        b = call("POST", f"/projects/{p['id']}/views/{v['id']}/buckets", {"title": title})
+        print(f"{b['id']:>4}  {b['title']}")
+    if a.done:
+        b = next(b for b in items(f"/projects/{p['id']}/views/{v['id']}/buckets")
+                 if b["title"].lower() == a.done.lower())
+        v2 = {k: v[k] for k in v if k not in ("$schema",)}
+        v2["done_bucket_id"] = b["id"]
+        call("PUT", f"/projects/{p['id']}/views/{v['id']}", v2)
+        print(f"done bucket = {b['title']}")
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="vk", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--json", action="store_true", help="raw JSON where supported")
+    sp = ap.add_subparsers(dest="cmd", required=True)
+
+    s = sp.add_parser("init", help="store the API token (and optional URL), test it")
+    s.add_argument("token"); s.add_argument("--url"); s.set_defaults(f=cmd_init)
+
+    s = sp.add_parser("projects", help="list projects as Parent/Child with ids"); s.set_defaults(f=cmd_projects)
+
+    s = sp.add_parser("ls", help="open tasks, priority first")
+    s.add_argument("-p", "--project", help="name, Parent/Child, or id; includes children")
+    s.add_argument("-a", "--assignee", help="username")
+    s.add_argument("-l", "--label")
+    s.add_argument("--all", action="store_true", help="include done tasks")
+    s.set_defaults(f=cmd_ls)
+
+    s = sp.add_parser("show", help="task with description and comments")
+    s.add_argument("id", nargs="+", type=int); s.set_defaults(f=cmd_show)
+
+    s = sp.add_parser("add", help="create a task")
+    s.add_argument("-p", "--project", required=True); s.add_argument("title")
+    s.add_argument("-d", "--desc", help="plain text; blank line = paragraph")
+    s.add_argument("-a", "--assignee", action="append"); s.add_argument("-l", "--label", action="append")
+    s.add_argument("-P", "--priority", type=int, choices=range(0, 6)); s.add_argument("--due", help="YYYY-MM-DD")
+    s.add_argument("-b", "--bucket"); s.set_defaults(f=cmd_add)
+
+    s = sp.add_parser("edit", help="change fields, assignees, labels, bucket, project")
+    s.add_argument("id", nargs="+", type=int); s.add_argument("-t", "--title")
+    s.add_argument("-d", "--desc"); s.add_argument("-a", "--assignee", action="append")
+    s.add_argument("--unassign", action="append"); s.add_argument("-l", "--label", action="append")
+    s.add_argument("--unlabel", action="append"); s.add_argument("-P", "--priority", type=int, choices=range(0, 6))
+    s.add_argument("--due", help="YYYY-MM-DD or none"); s.add_argument("-b", "--bucket"); s.add_argument("-p", "--project")
+    s.set_defaults(f=cmd_edit)
+
+    s = sp.add_parser("done", help="mark done (optionally with a closing comment)")
+    s.add_argument("id", nargs="+", type=int); s.add_argument("-c", "--comment")
+    s.add_argument("--undo", action="store_true"); s.set_defaults(f=cmd_done)
+
+    s = sp.add_parser("comment", help="add a comment"); s.add_argument("id", type=int); s.add_argument("text"); s.set_defaults(f=cmd_comment)
+    s = sp.add_parser("mv", help="move to a kanban bucket"); s.add_argument("id", type=int); s.add_argument("bucket"); s.set_defaults(f=cmd_mv)
+
+    s = sp.add_parser("recent", help="tasks touched in the last N days, with new comments")
+    s.add_argument("-d", "--days", type=int, default=7); s.add_argument("-p", "--project"); s.set_defaults(f=cmd_recent)
+
+    s = sp.add_parser("labels", help="list labels"); s.set_defaults(f=cmd_labels)
+    s = sp.add_parser("buckets", help="kanban buckets of a project"); s.add_argument("project"); s.set_defaults(f=cmd_buckets)
+    s = sp.add_parser("mkproject", help="create a project"); s.add_argument("title"); s.add_argument("--parent"); s.set_defaults(f=cmd_mkproject)
+    s = sp.add_parser("mkbucket", help="create kanban buckets"); s.add_argument("project"); s.add_argument("title", nargs="+")
+    s.add_argument("--done", help="bucket title to flag as the done bucket"); s.set_defaults(f=cmd_mkbucket)
+
+    a = ap.parse_args()
+    try:
+        a.f(a)
+    except ApiError as e:
+        sys.exit(f"vk: {e}")
+
+
+if __name__ == "__main__":
+    main()
