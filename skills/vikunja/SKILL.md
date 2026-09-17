@@ -5,7 +5,8 @@ description: The shared task board (Vikunja at tasks.maybloom.space) for Miguel 
 
 # Vikunja task board
 
-Talk to it only through `vk` (next to this file; `~/.claude/skills/vikunja/vk`).
+Talk to it only through `vk`. The plugin puts it on the Bash tool's PATH;
+outside Claude Code it is `${CLAUDE_PLUGIN_ROOT}/bin/vk`.
 Never curl the API by hand and never dump raw JSON into the conversation:
 `vk` prints one line per task and that is all the context a session needs.
 
@@ -71,9 +72,13 @@ one-off not in `vk`.
 
 ## Setup on a new machine
 
-The skill is its own repo; the checkout is the skill directory:
-`git clone git@github.com:MaybloomTech/vikunja-skill.git ~/.claude/skills/vikunja`
-(update with `git -C ~/.claude/skills/vikunja pull`). Needs only `python3`.
+Install the plugin (the repo is its own marketplace; SSH because it is
+private):
+
+```
+claude plugin marketplace add git@github.com:MaybloomTech/vikunja-skill.git
+claude plugin install vikunja@vikunja-skill
+```
 
 Token per machine, named after the host, created in the `claude` account
 (Settings → API Tokens; scopes: projects, tasks incl. comments, labels,
