@@ -54,10 +54,18 @@ through Vikunja's editor.
 
 A project's description can override any of these for that project.
 
-**Projects.** Parents group, children hold tasks. Every project has a
-description saying what goes in it; `vk mkproject -d` sets one at
-creation and `vk project -d` later. A parent's description says whether
-tasks go in it at all.
+**Projects.** Parents group, children hold tasks. A project's description
+is its conventions: what belongs in it, what does not, and any rule,
+label or bucket set of its own. There is no other place for them. So:
+
+- Creating a project means writing that description: `vk mkproject -d`,
+  never a bare `vk mkproject`. A parent's says whether tasks go in it at
+  all.
+- When the user states a rule that applies to a project, put it in the
+  description (`vk project PROJECT -d`) so every machine and session sees
+  it, and say so in chat. Memory files are for what you learned, not for
+  the team's rules.
+- Reading it comes before filing into it.
 
 **Buckets.** `vk mkproject` gives every project Backlog, Next, Doing,
 Waiting, Done: new tasks land in Backlog, Done is the done bucket, so
