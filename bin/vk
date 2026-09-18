@@ -241,11 +241,13 @@ def cmd_init(a):
     fd = os.open(os.path.join(CFG, "token"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write(a.token.strip() + "\n")
-    if a.url:
-        with open(os.path.join(CFG, "url"), "w") as f:
-            f.write(a.url.strip() + "\n")
-    global TOKEN
+    global TOKEN, URL, API
     TOKEN = a.token.strip()
+    if a.url:
+        URL = a.url.strip().rstrip("/")
+        API = URL + "/api/v2"
+        with open(os.path.join(CFG, "url"), "w") as f:
+            f.write(URL + "\n")
     ps = load_projects()
     print(f"ok: {len(ps)} projects visible at {URL}")
 
