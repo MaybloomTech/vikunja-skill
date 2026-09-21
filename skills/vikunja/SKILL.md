@@ -48,6 +48,12 @@ vk mkproject "Title" [--parent PROJECT] [-d DESC] [--no-buckets]
 vk mkbucket PROJECT Name... [--done Name] [--default Name]
 ```
 
+ID is what `vk` prints: `LAB-3` (the project's identifier plus the
+per-project number, the same thing the web UI shows) or a global `#29` for
+projects without an identifier. Both forms are accepted everywhere; use the
+printed one in chat, comments and PRs so humans can find the card. Set a
+project's prefix with `vk project NAME --identifier LAB`.
+
 PROJECT is a name (`Homelab`), a path (`Team/Homelab`) or an id.
 Descriptions and comments are plain text: blank lines make paragraphs,
 `# ` headings, `- ` and `1. ` lists and `code` spans survive the trip
