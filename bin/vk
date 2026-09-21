@@ -433,8 +433,7 @@ def cmd_mv(a):
 
 
 def cmd_recent(a):
-    """What changed: tasks updated since a date, with their newer comments.
-    As `inbox`: only tasks where someone else commented after my last comment."""
+    """What changed: tasks updated since a date, with their newer comments."""
     projects = load_projects()
     since = (dt.date.today() - dt.timedelta(days=a.days)).isoformat()
     params = {"filter": f"updated >= '{since}'", "sort_by": ["updated"], "order_by": ["desc"]}
@@ -442,20 +441,48 @@ def cmd_recent(a):
         p = find_project(a.project, projects)
         ids = [p["id"]] + [c["id"] for c in projects.values() if c["parent"] == p["id"]]
         params["filter"] += " && project in " + ", ".join(map(str, ids))
-    me = call("GET", "/user")["username"] if a.inbox else None
     for t in items("/tasks", params):
-        comments = items(f"/tasks/{t['id']}/comments", {"order_by": "asc"})
-        if a.inbox:
-            # only what is waiting on me: comments by others after my last one
-            mine = [i for i, c in enumerate(comments) if (c.get("author") or {}).get("username") == me]
-            comments = comments[mine[-1] + 1:] if mine else comments
-        comments = [c for c in comments if (c.get("created") or "") >= since]
-        if a.inbox and not comments:
-            continue
+        comments = [c for c in items(f"/tasks/{t['id']}/comments", {"order_by": "asc"})
+                    if (c.get("created") or "") >= since]
         print(fmt_task(t, projects) + f"  (upd {date(t.get('updated'))})")
         for c in comments:
             who = (c.get("author") or {}).get("username", "?")
             print(f"  > {date(c.get('created'))} {who}: " + to_text(c.get("comment")).replace("\n", "\n    "))
+
+
+def unread():
+    """Unread notifications of this account, oldest first, keyed by task id.
+    Vikunja keeps the read state per notification on the server: it never
+    contains my own actions, and every machine sees the same state."""
+    by_task = {}
+    for n in sorted(items("/notifications"), key=lambda n: n.get("created") or ""):
+        task = (n.get("notification") or {}).get("task")
+        if task and (n.get("read_at") or NULL_DATE) == NULL_DATE:
+            by_task.setdefault(task["id"], []).append(n)
+    return by_task
+
+
+def cmd_inbox(a):
+    projects = load_projects()
+    for tid, ns in unread().items():
+        try:
+            print(fmt_task(get_task(tid), projects))
+        except ApiError:
+            print(f"#{tid}  (deleted)")
+        for n in ns:
+            d = n["notification"]
+            who = (d.get("doer") or d.get("assignee") or {}).get("username", "?")
+            c = d.get("comment")
+            what = to_text(c.get("comment")).replace("\n", "\n    ") if c else n.get("name", "?")
+            print(f"  > {date(n.get('created'))} {who}: {what}")
+
+
+def cmd_ack(a):
+    by_task = unread()
+    for tid in a.id:
+        for n in by_task.get(tid, []):
+            call("PUT", f"/notifications/{n['id']}", {"read": True})
+        print(f"{ref(get_task(tid))} acked {len(by_task.get(tid, []))}")
 
 
 def cmd_labels(a):
@@ -569,9 +596,10 @@ def main():
     s = sp.add_parser("mv", help="move to a kanban bucket"); s.add_argument("id", type=task_id); s.add_argument("bucket"); s.set_defaults(f=cmd_mv)
 
     s = sp.add_parser("recent", help="tasks touched in the last N days, with new comments")
-    s.add_argument("-d", "--days", type=int, default=7); s.add_argument("-p", "--project"); s.set_defaults(f=cmd_recent, inbox=False)
-    s = sp.add_parser("inbox", help="tasks where someone else commented after my last comment")
-    s.add_argument("-d", "--days", type=int, default=14); s.add_argument("-p", "--project"); s.set_defaults(f=cmd_recent, inbox=True)
+    s.add_argument("-d", "--days", type=int, default=7); s.add_argument("-p", "--project"); s.set_defaults(f=cmd_recent)
+    s = sp.add_parser("inbox", help="unread notifications (comments, assignments, mentions), by task"); s.set_defaults(f=cmd_inbox)
+    s = sp.add_parser("ack", help="mark a task's notifications read, once handled")
+    s.add_argument("id", nargs="+", type=task_id); s.set_defaults(f=cmd_ack)
 
     s = sp.add_parser("labels", help="list labels"); s.set_defaults(f=cmd_labels)
     s = sp.add_parser("buckets", help="kanban buckets of a project"); s.add_argument("project"); s.set_defaults(f=cmd_buckets)
