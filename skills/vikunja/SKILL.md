@@ -33,7 +33,7 @@ Never curl the API by hand and never dump raw JSON into the conversation:
 
 ```
 vk projects [-v]                                  projects as Parent/Child (-v: with descriptions)
-vk project PROJECT [-d DESC]                      one project: description and buckets (-d sets it)
+vk project PROJECT [-d DESC] [--identifier LAB]                   one project: description and buckets (-d sets it)
 vk ls [-p PROJECT] [-a USER] [-l LABEL] [--all]   open tasks, priority first
 vk show ID...                                     description + comments
 vk add -p PROJECT "Title" [-d DESC] [-a USER] [-l LABEL] [-P 0-5] [--due YYYY-MM-DD] [-b BUCKET]
