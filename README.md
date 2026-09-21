@@ -41,6 +41,13 @@ Then point the machine at the instance:
    in `~/.config/vikunja/` (`token` is 0600) and prints how many projects
    it can see.
 
+3. Once per instance, in the web UI as the agents' account: open each
+   top-level project, ⋯ → Subscribe (children inherit). `vk inbox` reads
+   that account's notifications, and Vikunja only notifies subscribers;
+   without it, a card someone else creates and does not assign to the
+   agent stays silent. API tokens cannot subscribe, and the token needs
+   the notifications scope.
+
 The token never goes in a repo. One token per machine, so a lost laptop is
 one token to revoke. `VIKUNJA_URL` and `VIKUNJA_TOKEN` override the files.
 
