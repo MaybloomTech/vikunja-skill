@@ -405,7 +405,8 @@ def cmd_mv(a):
 
 
 def cmd_recent(a):
-    """What changed: tasks updated since a date, with their newer comments."""
+    """What changed: tasks updated since a date, with their newer comments.
+    As `inbox`: only tasks where someone else commented after my last comment."""
     projects = load_projects()
     since = (dt.date.today() - dt.timedelta(days=a.days)).isoformat()
     params = {"filter": f"updated >= '{since}'", "sort_by": ["updated"], "order_by": ["desc"]}
@@ -413,12 +414,20 @@ def cmd_recent(a):
         p = find_project(a.project, projects)
         ids = [p["id"]] + [c["id"] for c in projects.values() if c["parent"] == p["id"]]
         params["filter"] += " && project in " + ", ".join(map(str, ids))
+    me = call("GET", "/user")["username"] if a.inbox else None
     for t in items("/tasks", params):
+        comments = items(f"/tasks/{t['id']}/comments", {"order_by": "asc"})
+        if a.inbox:
+            # only what is waiting on me: comments by others after my last one
+            mine = [i for i, c in enumerate(comments) if (c.get("author") or {}).get("username") == me]
+            comments = comments[mine[-1] + 1:] if mine else comments
+        comments = [c for c in comments if (c.get("created") or "") >= since]
+        if a.inbox and not comments:
+            continue
         print(fmt_task(t, projects) + f"  (upd {date(t.get('updated'))})")
-        for c in items(f"/tasks/{t['id']}/comments", {"order_by": "asc"}):
-            if (c.get("created") or "") >= since:
-                who = (c.get("author") or {}).get("username", "?")
-                print(f"  > {date(c.get('created'))} {who}: " + to_text(c.get("comment")).replace("\n", "\n    "))
+        for c in comments:
+            who = (c.get("author") or {}).get("username", "?")
+            print(f"  > {date(c.get('created'))} {who}: " + to_text(c.get("comment")).replace("\n", "\n    "))
 
 
 def cmd_labels(a):
@@ -531,7 +540,9 @@ def main():
     s = sp.add_parser("mv", help="move to a kanban bucket"); s.add_argument("id", type=int); s.add_argument("bucket"); s.set_defaults(f=cmd_mv)
 
     s = sp.add_parser("recent", help="tasks touched in the last N days, with new comments")
-    s.add_argument("-d", "--days", type=int, default=7); s.add_argument("-p", "--project"); s.set_defaults(f=cmd_recent)
+    s.add_argument("-d", "--days", type=int, default=7); s.add_argument("-p", "--project"); s.set_defaults(f=cmd_recent, inbox=False)
+    s = sp.add_parser("inbox", help="tasks where someone else commented after my last comment")
+    s.add_argument("-d", "--days", type=int, default=14); s.add_argument("-p", "--project"); s.set_defaults(f=cmd_recent, inbox=True)
 
     s = sp.add_parser("labels", help="list labels"); s.set_defaults(f=cmd_labels)
     s = sp.add_parser("buckets", help="kanban buckets of a project"); s.add_argument("project"); s.set_defaults(f=cmd_buckets)
