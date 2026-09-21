@@ -15,8 +15,10 @@ Never curl the API by hand and never dump raw JSON into the conversation:
 1. `vk projects -v` once per session. Each project's description says what
    belongs in it and any rules or labels of its own; they override the
    defaults below.
-2. `vk recent -d 7` (what changed since last time), then `vk ls -a <my
-   account>` and `vk ls -p <project>` for the area at hand.
+2. `vk inbox` (replies waiting on me: comments by others after my last
+   one; answer or act on each before anything else), then `vk recent -d 7`
+   (everything that changed), `vk ls -a <my account>` and `vk ls -p
+   <project>` for the area at hand.
 3. Pick up a task: `vk mv <id> Doing` when starting it.
 4. Ship: `vk done <id> -c "PR #51 merged, deployed 2026-09-16 21:10"`.
    The closing comment is the log: PR numbers, deploy time, what was verified.
@@ -40,6 +42,7 @@ vk done ID... [-c "closing note"] [--undo]
 vk comment ID "text"
 vk mv ID BUCKET
 vk recent [-d DAYS] [-p PROJECT]
+vk inbox [-d DAYS] [-p PROJECT]                   comments by others since my last one
 vk labels | vk buckets PROJECT
 vk mkproject "Title" [--parent PROJECT] [-d DESC] [--no-buckets]
 vk mkbucket PROJECT Name... [--done Name] [--default Name]
