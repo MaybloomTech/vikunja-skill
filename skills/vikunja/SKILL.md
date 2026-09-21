@@ -33,7 +33,7 @@ Never curl the API by hand and never dump raw JSON into the conversation:
 
 ```
 vk projects [-v]                                  projects as Parent/Child (-v: with descriptions)
-vk project PROJECT [-d DESC]                      one project: description and buckets (-d sets it)
+vk project PROJECT [-d DESC] [--identifier LAB]                   one project: description and buckets (-d sets it)
 vk ls [-p PROJECT] [-a USER] [-l LABEL] [--all]   open tasks, priority first
 vk show ID...                                     description + comments
 vk add -p PROJECT "Title" [-d DESC] [-a USER] [-l LABEL] [-P 0-5] [--due YYYY-MM-DD] [-b BUCKET]
@@ -47,6 +47,12 @@ vk labels | vk buckets PROJECT
 vk mkproject "Title" [--parent PROJECT] [-d DESC] [--no-buckets]
 vk mkbucket PROJECT Name... [--done Name] [--default Name]
 ```
+
+ID is what `vk` prints: `LAB-3` (the project's identifier plus the
+per-project number, the same thing the web UI shows) or a global `#29` for
+projects without an identifier. Both forms are accepted everywhere; use the
+printed one in chat, comments and PRs so humans can find the card. Set a
+project's prefix with `vk project NAME --identifier LAB`.
 
 PROJECT is a name (`Homelab`), a path (`Team/Homelab`) or an id.
 Descriptions and comments are plain text: blank lines make paragraphs,

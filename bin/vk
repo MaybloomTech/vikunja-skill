@@ -135,6 +135,30 @@ def date(s):
     return s[:10]
 
 
+def ref(t):
+    """The id the web UI shows: LAB-3 when the project has an identifier,
+    otherwise the global #id (the UI's bare #3 is per project, so ambiguous)."""
+    ident = t.get("identifier") or ""
+    return ident if ident and not ident.startswith("#") else f"#{t['id']}"
+
+
+def task_id(s):
+    """argparse type: 29, #29 (global id) or LAB-3 (project identifier + index)."""
+    m = re.fullmatch(r"#?(\d+)", s)
+    if m:
+        return int(m.group(1))
+    m = re.fullmatch(r"([A-Za-z][A-Za-z0-9]*)-(\d+)", s)
+    if not m:
+        raise argparse.ArgumentTypeError(f"not a task id: {s} (29 or LAB-3)")
+    pid = next((p["id"] for p in items("/projects") if (p.get("identifier") or "").upper() == m.group(1).upper()), None)
+    if pid is None:
+        raise argparse.ArgumentTypeError(f"no project with identifier {m.group(1).upper()}")
+    found = items("/tasks", {"filter": f"project = {pid} && index = {m.group(2)}"})
+    if not found:
+        raise argparse.ArgumentTypeError(f"no task {s.upper()}")
+    return found[0]["id"]
+
+
 def fmt_task(t, projects=None):
     proj = ""
     if projects:
@@ -143,7 +167,7 @@ def fmt_task(t, projects=None):
     who = ",".join("@" + a["username"] for a in t.get("assignees") or [])
     labels = ",".join(l["title"] for l in t.get("labels") or [])
     due = date(t.get("due_date"))
-    cols = [f"#{t['id']}", PRIO.get(t.get("priority", 0), ""), proj, who,
+    cols = [ref(t), PRIO.get(t.get("priority", 0), ""), proj, who,
             f"[{labels}]" if labels else "", f"due {due}" if due else "",
             "DONE" if t.get("done") else "", t["title"]]
     return "  ".join(c for c in cols if c)
@@ -159,6 +183,7 @@ def load_projects():
         par = p.get("parent_project_id")
         return (path(ps[par]) + "/" if par and par in ps else "") + p["title"]
     return {i: {"id": i, "title": p["title"], "parent": p.get("parent_project_id"), "path": path(p),
+                "identifier": p.get("identifier") or "",
                 "description": to_text(p.get("description"))}
             for i, p in ps.items()}
 
@@ -254,7 +279,7 @@ def cmd_init(a):
 
 def cmd_projects(a):
     for p in sorted(load_projects().values(), key=lambda p: p["path"].lower()):
-        print(f"{p['id']:>4}  {p['path']}")
+        print(f"{p['id']:>4}  {p['path']}" + (f"  [{p['identifier']}]" if p["identifier"] else ""))
         if a.verbose and p["description"]:
             print("      " + p["description"].replace("\n", "\n      "))
 
@@ -266,7 +291,10 @@ def cmd_project(a):
         text = sys.stdin.read() if a.desc == "-" else a.desc
         update(f"/projects/{p['id']}", {"description": to_html(text)}, lambda: call("GET", f"/projects/{p['id']}"))
         p = find_project(str(p["id"]))
-    print(f"{p['id']:>4}  {p['path']}")
+    if a.identifier is not None:
+        update(f"/projects/{p['id']}", {"identifier": a.identifier.upper()}, lambda: call("GET", f"/projects/{p['id']}"))
+        p = find_project(str(p["id"]))
+    print(f"{p['id']:>4}  {p['path']}" + (f"  [{p['identifier']}]" if p["identifier"] else ""))
     if p["description"]:
         print("      " + p["description"].replace("\n", "\n      "))
     v, buckets = kanban(p["id"])
@@ -393,7 +421,7 @@ def cmd_done(a):
 
 def cmd_comment(a):
     call("POST", f"/tasks/{a.id}/comments", {"comment": to_html(a.text)})
-    print(f"#{a.id} commented")
+    print(f"{ref(get_task(a.id))} commented")
 
 
 def cmd_mv(a):
@@ -401,7 +429,7 @@ def cmd_mv(a):
     t = get_task(a.id)
     v, b = find_bucket(t["project_id"], a.bucket)
     call("PUT", f"/projects/{t['project_id']}/views/{v['id']}/buckets/{b['id']}/tasks", {"task_id": t["id"]})
-    print(f"#{a.id} -> {b['title']}")
+    print(f"{ref(t)} -> {b['title']}")
 
 
 def cmd_recent(a):
@@ -505,6 +533,7 @@ def main():
     s.add_argument("-v", "--verbose", action="store_true", help="with each project's description"); s.set_defaults(f=cmd_projects)
     s = sp.add_parser("project", help="one project: description (what goes in it) and buckets")
     s.add_argument("project"); s.add_argument("-d", "--desc", help="set the description (plain text, - for stdin)")
+    s.add_argument("--identifier", help="short task prefix, e.g. LAB: tasks show as LAB-3 (max 10 chars)")
     s.set_defaults(f=cmd_project)
 
     s = sp.add_parser("ls", help="open tasks, priority first")
@@ -515,7 +544,7 @@ def main():
     s.set_defaults(f=cmd_ls)
 
     s = sp.add_parser("show", help="task with description and comments")
-    s.add_argument("id", nargs="+", type=int); s.set_defaults(f=cmd_show)
+    s.add_argument("id", nargs="+", type=task_id); s.set_defaults(f=cmd_show)
 
     s = sp.add_parser("add", help="create a task")
     s.add_argument("-p", "--project", required=True); s.add_argument("title")
@@ -525,7 +554,7 @@ def main():
     s.add_argument("-b", "--bucket"); s.set_defaults(f=cmd_add)
 
     s = sp.add_parser("edit", help="change fields, assignees, labels, bucket, project")
-    s.add_argument("id", nargs="+", type=int); s.add_argument("-t", "--title")
+    s.add_argument("id", nargs="+", type=task_id); s.add_argument("-t", "--title")
     s.add_argument("-d", "--desc"); s.add_argument("-a", "--assignee", action="append")
     s.add_argument("--unassign", action="append"); s.add_argument("-l", "--label", action="append")
     s.add_argument("--unlabel", action="append"); s.add_argument("-P", "--priority", type=int, choices=range(0, 6))
@@ -533,11 +562,11 @@ def main():
     s.set_defaults(f=cmd_edit)
 
     s = sp.add_parser("done", help="mark done (optionally with a closing comment)")
-    s.add_argument("id", nargs="+", type=int); s.add_argument("-c", "--comment")
+    s.add_argument("id", nargs="+", type=task_id); s.add_argument("-c", "--comment")
     s.add_argument("--undo", action="store_true"); s.set_defaults(f=cmd_done)
 
-    s = sp.add_parser("comment", help="add a comment"); s.add_argument("id", type=int); s.add_argument("text"); s.set_defaults(f=cmd_comment)
-    s = sp.add_parser("mv", help="move to a kanban bucket"); s.add_argument("id", type=int); s.add_argument("bucket"); s.set_defaults(f=cmd_mv)
+    s = sp.add_parser("comment", help="add a comment"); s.add_argument("id", type=task_id); s.add_argument("text"); s.set_defaults(f=cmd_comment)
+    s = sp.add_parser("mv", help="move to a kanban bucket"); s.add_argument("id", type=task_id); s.add_argument("bucket"); s.set_defaults(f=cmd_mv)
 
     s = sp.add_parser("recent", help="tasks touched in the last N days, with new comments")
     s.add_argument("-d", "--days", type=int, default=7); s.add_argument("-p", "--project"); s.set_defaults(f=cmd_recent, inbox=False)
