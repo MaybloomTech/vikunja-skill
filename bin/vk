@@ -10,13 +10,12 @@ Only the Python standard library; Vikunja API v2 (2.4+).
 import argparse
 import datetime as dt
 import html
+import http.client
 import json
 import os
 import re
 import sys
-import urllib.error
 import urllib.parse
-import urllib.request
 
 CFG = os.path.expanduser("~/.config/vikunja")
 NULL_DATE = "0001-01-01T00:00:00Z"
@@ -34,7 +33,8 @@ def cfg(name, default=None):
 URL = (os.environ.get("VIKUNJA_URL") or cfg("url") or "").rstrip("/")
 TOKEN = os.environ.get("VIKUNJA_TOKEN") or cfg("token")
 DEFAULT_BUCKETS = ["Backlog", "Next", "Doing", "Waiting", "Done"]  # first = default, last = done
-API = URL + "/api/v2"
+STAMP = "last-recent"  # ~/.config/vikunja/last-recent: when `vk recent` last ran on this machine
+CLIP = 240  # chars of a comment `vk recent` shows before pointing at `vk show`
 
 
 class ApiError(Exception):
@@ -43,28 +43,42 @@ class ApiError(Exception):
         self.code = code
 
 
+_conn = None
+
+
 def call(method, path, body=None, params=None, ctype="application/json"):
+    """One HTTPS connection per run (keep-alive): one name lookup and one TLS
+    handshake for the whole command, not one per request."""
+    global _conn
     if not URL:
         sys.exit("no instance URL: run `vk init <token> --url https://...` or set VIKUNJA_URL")
     if not TOKEN:
         sys.exit("no token: run `vk init <token>` or set VIKUNJA_TOKEN")
-    url = API + path
+    u = urllib.parse.urlsplit(URL)
+    target = u.path.rstrip("/") + "/api/v2" + path
     if params:
-        url += "?" + urllib.parse.urlencode(params, doseq=True)
+        target += "?" + urllib.parse.urlencode(params, doseq=True)
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method, headers={
-        "Authorization": "Bearer " + TOKEN,
-        "Content-Type": ctype,
-        "Accept": "application/json",
-    })
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
+    headers = {"Authorization": "Bearer " + TOKEN, "Content-Type": ctype, "Accept": "application/json"}
+    for attempt in (1, 2):
+        if _conn is None:
+            cls = http.client.HTTPSConnection if u.scheme == "https" else http.client.HTTPConnection
+            _conn = cls(u.hostname, u.port, timeout=30)
+        try:
+            _conn.request(method, target, body=data, headers=headers)
+            r = _conn.getresponse()
             raw = r.read()
-            return json.loads(raw) if raw else None
-    except urllib.error.HTTPError as e:
-        if e.code == 304:  # Not Modified: the value was already what we asked for
-            return None
-        raise ApiError(e.code, e.read().decode(errors="replace")[:400].strip())
+            break
+        except (http.client.HTTPException, OSError):
+            _conn.close()  # the server dropped the idle connection: reconnect once
+            _conn = None
+            if attempt == 2:
+                raise
+    if r.status == 304:  # Not Modified: the value was already what we asked for
+        return None
+    if r.status >= 400:
+        raise ApiError(r.status, raw.decode(errors="replace")[:400].strip())
+    return json.loads(raw) if raw else None
 
 
 def items(path, params=None):
@@ -135,6 +149,22 @@ def date(s):
     return s[:10]
 
 
+def when(s):
+    """An API timestamp as an aware datetime (offsets differ between records,
+    so string comparison is wrong)."""
+    return dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+
+def clip(text, full=False):
+    """The first two lines of a comment, at most CLIP chars, unless full."""
+    if full:
+        return text
+    lines = [l for l in text.split("\n") if l.strip()]
+    out = "\n".join(lines[:2])
+    cut = len(lines) > 2 or len(out) > CLIP
+    return (out[:CLIP].rstrip() + " ...") if cut else out
+
+
 def ref(t):
     """The id the web UI shows: LAB-3 when the project has an identifier,
     otherwise the global #id (the UI's bare #3 is per project, so ambiguous)."""
@@ -150,7 +180,7 @@ def task_id(s):
     m = re.fullmatch(r"([A-Za-z][A-Za-z0-9]*)-(\d+)", s)
     if not m:
         raise argparse.ArgumentTypeError(f"not a task id: {s} (29 or LAB-3)")
-    pid = next((p["id"] for p in items("/projects") if (p.get("identifier") or "").upper() == m.group(1).upper()), None)
+    pid = next((p["id"] for p in load_projects().values() if p["identifier"].upper() == m.group(1).upper()), None)
     if pid is None:
         raise argparse.ArgumentTypeError(f"no project with identifier {m.group(1).upper()}")
     found = items("/tasks", {"filter": f"project = {pid} && index = {m.group(2)}"})
@@ -175,17 +205,29 @@ def fmt_task(t, projects=None):
 
 # ---------- lookups ----------
 
-def load_projects():
-    """id -> {id, title, parent, path}. path is Parent/Child."""
+_projects = None
+
+
+def load_projects(fresh=False):
+    """id -> {id, title, parent, path}. path is Parent/Child. Cached per run."""
+    global _projects
+    if _projects is not None and not fresh:
+        return _projects
     ps = {p["id"]: p for p in items("/projects", {"is_archived": "false"})}
 
     def path(p):
         par = p.get("parent_project_id")
         return (path(ps[par]) + "/" if par and par in ps else "") + p["title"]
-    return {i: {"id": i, "title": p["title"], "parent": p.get("parent_project_id"), "path": path(p),
-                "identifier": p.get("identifier") or "",
-                "description": to_text(p.get("description"))}
-            for i, p in ps.items()}
+    _projects = {i: {"id": i, "title": p["title"], "parent": p.get("parent_project_id"), "path": path(p),
+                     "identifier": p.get("identifier") or "",
+                     "description": to_text(p.get("description"))}
+                 for i, p in ps.items()}
+    return _projects
+
+
+def me():
+    """The account behind the token."""
+    return call("GET", "/user") or {}
 
 
 def find_project(name, projects=None):
@@ -266,11 +308,11 @@ def cmd_init(a):
     fd = os.open(os.path.join(CFG, "token"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write(a.token.strip() + "\n")
-    global TOKEN, URL, API
+    global TOKEN, URL, _conn
     TOKEN = a.token.strip()
+    _conn = None
     if a.url:
         URL = a.url.strip().rstrip("/")
-        API = URL + "/api/v2"
         with open(os.path.join(CFG, "url"), "w") as f:
             f.write(URL + "\n")
     ps = load_projects()
@@ -290,10 +332,10 @@ def cmd_project(a):
     if a.desc is not None:
         text = sys.stdin.read() if a.desc == "-" else a.desc
         update(f"/projects/{p['id']}", {"description": to_html(text)}, lambda: call("GET", f"/projects/{p['id']}"))
-        p = find_project(str(p["id"]))
+        p = find_project(str(p["id"]), load_projects(fresh=True))
     if a.identifier is not None:
         update(f"/projects/{p['id']}", {"identifier": a.identifier.upper()}, lambda: call("GET", f"/projects/{p['id']}"))
-        p = find_project(str(p["id"]))
+        p = find_project(str(p["id"]), load_projects(fresh=True))
     print(f"{p['id']:>4}  {p['path']}" + (f"  [{p['identifier']}]" if p["identifier"] else ""))
     if p["description"]:
         print("      " + p["description"].replace("\n", "\n      "))
@@ -433,21 +475,40 @@ def cmd_mv(a):
 
 
 def cmd_recent(a):
-    """What changed: tasks updated since a date, with their newer comments."""
+    """What changed since the last run on this machine (or -d DAYS), with the
+    comments others wrote in that window. Own comments are noise to the
+    account that wrote them, so they are hidden unless --mine."""
     projects = load_projects()
-    since = (dt.date.today() - dt.timedelta(days=a.days)).isoformat()
-    params = {"filter": f"updated >= '{since}'", "sort_by": ["updated"], "order_by": ["desc"]}
+    now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+    if a.days is not None:
+        since, label = now - dt.timedelta(days=a.days), f"last {a.days} days"
+    elif cfg(STAMP):
+        since, label = when(cfg(STAMP)), "since the last `vk recent` on this machine"
+    else:
+        since, label = now - dt.timedelta(days=7), "last 7 days (first run here)"
+    params = {"filter": f"updated >= '{since.strftime('%Y-%m-%dT%H:%M:%SZ')}'", "expand": "comment_count",
+              "sort_by": ["updated"], "order_by": ["desc"]}
     if a.project:
         p = find_project(a.project, projects)
         ids = [p["id"]] + [c["id"] for c in projects.values() if c["parent"] == p["id"]]
         params["filter"] += " && project in " + ", ".join(map(str, ids))
-    for t in items("/tasks", params):
-        comments = [c for c in items(f"/tasks/{t['id']}/comments", {"order_by": "asc"})
-                    if (c.get("created") or "") >= since]
+    hide = None if a.mine else me().get("username")
+    tasks = items("/tasks", params)
+    print(f"# {label}: {since.astimezone().strftime('%Y-%m-%d %H:%M')} .. now, {len(tasks)} tasks"
+          + ("" if a.mine else "; my own comments hidden (--mine shows them)") + ("" if a.full else "; comments clipped (--full)"))
+    for t in tasks:
+        comments = []
+        if t.get("comment_count"):
+            comments = [c for c in items(f"/tasks/{t['id']}/comments", {"order_by": "asc"})
+                        if when(c.get("created")) >= since and (c.get("author") or {}).get("username") != hide]
         print(fmt_task(t, projects) + f"  (upd {date(t.get('updated'))})")
         for c in comments:
             who = (c.get("author") or {}).get("username", "?")
-            print(f"  > {date(c.get('created'))} {who}: " + to_text(c.get("comment")).replace("\n", "\n    "))
+            print(f"  > {date(c.get('created'))} {who}: " + clip(to_text(c.get("comment")), a.full).replace("\n", "\n    "))
+    if not a.project:  # a filtered run has not shown everything, so it does not advance the stamp
+        os.makedirs(CFG, mode=0o700, exist_ok=True)
+        with open(os.path.join(CFG, STAMP), "w") as f:
+            f.write(now.isoformat() + "\n")
 
 
 def unread():
@@ -464,7 +525,10 @@ def unread():
 
 def cmd_inbox(a):
     projects = load_projects()
-    for tid, ns in unread().items():
+    by_task = unread()
+    if not by_task:
+        print("(inbox empty)")
+    for tid, ns in by_task.items():
         try:
             print(fmt_task(get_task(tid), projects))
         except ApiError:
@@ -475,6 +539,24 @@ def cmd_inbox(a):
             c = d.get("comment")
             what = to_text(c.get("comment")).replace("\n", "\n    ") if c else n.get("name", "?")
             print(f"  > {date(n.get('created'))} {who}: {what}")
+
+
+def cmd_start(a):
+    """The session routine in one call: projects with their conventions, the
+    inbox, what changed, my open tasks (and a project's, with -p)."""
+    projects = load_projects()
+    who = me().get("username")
+    print("== projects (a description is that project's conventions)")
+    cmd_projects(argparse.Namespace(verbose=True))
+    print("\n== inbox (act, then `vk ack ID`)")
+    cmd_inbox(a)
+    print("\n== recent")
+    cmd_recent(argparse.Namespace(days=a.days, project=None, mine=False, full=False))
+    print(f"\n== open, assigned to @{who}")
+    cmd_ls(argparse.Namespace(all=False, project=None, assignee=who, label=None, json=False))
+    if a.project:
+        print(f"\n== open in {find_project(a.project, projects)['path']}")
+        cmd_ls(argparse.Namespace(all=False, project=a.project, assignee=None, label=None, json=False))
 
 
 def cmd_ack(a):
@@ -595,8 +677,13 @@ def main():
     s = sp.add_parser("comment", help="add a comment"); s.add_argument("id", type=task_id); s.add_argument("text"); s.set_defaults(f=cmd_comment)
     s = sp.add_parser("mv", help="move to a kanban bucket"); s.add_argument("id", type=task_id); s.add_argument("bucket"); s.set_defaults(f=cmd_mv)
 
-    s = sp.add_parser("recent", help="tasks touched in the last N days, with new comments")
-    s.add_argument("-d", "--days", type=int, default=7); s.add_argument("-p", "--project"); s.set_defaults(f=cmd_recent)
+    s = sp.add_parser("recent", help="what changed since the last run here (or -d DAYS), with others' new comments")
+    s.add_argument("-d", "--days", type=int, help="a fixed window instead of 'since the last run on this machine'")
+    s.add_argument("-p", "--project"); s.add_argument("--mine", action="store_true", help="include my own comments")
+    s.add_argument("--full", action="store_true", help="whole comments, not the first two lines"); s.set_defaults(f=cmd_recent)
+    s = sp.add_parser("start", help="the session routine in one call: projects -v, inbox, recent, my open tasks")
+    s.add_argument("-p", "--project", help="also list that project's open tasks")
+    s.add_argument("-d", "--days", type=int, help="window for the recent section"); s.set_defaults(f=cmd_start)
     s = sp.add_parser("inbox", help="unread notifications (comments, assignments, mentions), by task"); s.set_defaults(f=cmd_inbox)
     s = sp.add_parser("ack", help="mark a task's notifications read, once handled")
     s.add_argument("id", nargs="+", type=task_id); s.set_defaults(f=cmd_ack)
@@ -615,6 +702,8 @@ def main():
         a.f(a)
     except ApiError as e:
         sys.exit(f"vk: {e}")
+    except OSError as e:
+        sys.exit(f"vk: cannot reach {URL}: {e}")
 
 
 if __name__ == "__main__":

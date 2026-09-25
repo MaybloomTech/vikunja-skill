@@ -12,7 +12,12 @@ bin/vk                            the client; on the Bash tool's PATH while the 
 
 `vk` is a small Vikunja client that prints one line per task, so a session
 spends a few dozen tokens on the board instead of pages of JSON. Python
-standard library only; Vikunja API v2 (2.4+).
+standard library only; Vikunja API v2 (2.4+). One HTTPS connection per
+run, so a command is one name lookup and one handshake however many
+requests it makes. `vk start` is the whole session routine in one call;
+`vk recent` reports what changed since it last ran on the machine (the
+stamp lives in `~/.config/vikunja/last-recent`) and shows only the
+comments other people wrote, clipped to two lines.
 
 The skill carries the team-independent part: a session routine, and
 defaults for buckets (`Backlog, Next, Doing, Waiting, Done`, created by
