@@ -17,7 +17,9 @@ run, so a command is one name lookup and one handshake however many
 requests it makes. `vk start` is the whole session routine in one call;
 `vk recent` reports what changed since it last ran on the machine (the
 stamp lives in `~/.config/vikunja/last-recent`) and shows only the
-comments other people wrote, clipped to two lines.
+comments other people wrote, clipped to two lines; `vk inbox` clips the
+same way, so a pasted log in one comment stays out of every session's
+context.
 
 The skill carries the team-independent part: a session routine, and
 defaults for buckets (`Backlog, Next, Doing, Waiting, Done`, created by

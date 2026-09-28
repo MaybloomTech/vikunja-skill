@@ -524,6 +524,9 @@ def unread():
 
 
 def cmd_inbox(a):
+    """Unread notifications by task. Comments are clipped like in recent: a
+    pasted log in one closing comment would otherwise land in every
+    session's context on every machine until the card is acked."""
     projects = load_projects()
     by_task = unread()
     if not by_task:
@@ -537,7 +540,7 @@ def cmd_inbox(a):
             d = n["notification"]
             who = (d.get("doer") or d.get("assignee") or {}).get("username", "?")
             c = d.get("comment")
-            what = to_text(c.get("comment")).replace("\n", "\n    ") if c else n.get("name", "?")
+            what = clip(to_text(c.get("comment")), a.full).replace("\n", "\n    ") if c else n.get("name", "?")
             print(f"  > {date(n.get('created'))} {who}: {what}")
 
 
@@ -548,8 +551,8 @@ def cmd_start(a):
     who = me().get("username")
     print("== projects (a description is that project's conventions)")
     cmd_projects(argparse.Namespace(verbose=True))
-    print("\n== inbox (act, then `vk ack ID`)")
-    cmd_inbox(a)
+    print("\n== inbox (act, then `vk ack ID`; comments clipped, `vk show ID` reads a card in full)")
+    cmd_inbox(argparse.Namespace(full=False))
     print("\n== recent")
     cmd_recent(argparse.Namespace(days=a.days, project=None, mine=False, full=False))
     print(f"\n== open, assigned to @{who}")
@@ -684,7 +687,8 @@ def main():
     s = sp.add_parser("start", help="the session routine in one call: projects -v, inbox, recent, my open tasks")
     s.add_argument("-p", "--project", help="also list that project's open tasks")
     s.add_argument("-d", "--days", type=int, help="window for the recent section"); s.set_defaults(f=cmd_start)
-    s = sp.add_parser("inbox", help="unread notifications (comments, assignments, mentions), by task"); s.set_defaults(f=cmd_inbox)
+    s = sp.add_parser("inbox", help="unread notifications (comments, assignments, mentions), by task; comments clipped")
+    s.add_argument("--full", action="store_true", help="whole comments, not the first two lines"); s.set_defaults(f=cmd_inbox)
     s = sp.add_parser("ack", help="mark a task's notifications read, once handled")
     s.add_argument("id", nargs="+", type=task_id); s.set_defaults(f=cmd_ack)
 
