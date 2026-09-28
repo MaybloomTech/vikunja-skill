@@ -17,10 +17,11 @@ Never curl the API by hand and never dump raw JSON into the conversation:
    - projects with their descriptions: each says what belongs in it and
      any rules or labels of its own; they override the defaults below.
    - inbox: my account's unread notifications (comments by others,
-     assignments, mentions), by task. Act on each (answer, do the work, or
-     file it), then `vk ack <id>` marks them read. Never ack what you have
-     not handled: the read state is shared by every machine, so an ack
-     hides it everywhere.
+     assignments, mentions), by task, comments clipped as in recent (`vk
+     inbox --full` for whole ones, `vk show ID` for one card). Act on each
+     (answer, do the work, or file it), then `vk ack <id>` marks them
+     read. Never ack what you have not handled: the read state is shared
+     by every machine, so an ack hides it everywhere.
    - recent: what changed since `vk recent` last ran on this machine
      (first run: 7 days), including cards humans closed, which do not
      notify. Comments others wrote are shown clipped; mine are hidden. `vk
@@ -52,7 +53,7 @@ vk comment ID "text"
 vk mv ID BUCKET
 vk start [-p PROJECT] [-d DAYS]                   the session routine in one call (see above)
 vk recent [-d DAYS] [-p PROJECT] [--mine] [--full] changed since the last run here; others' comments, clipped
-vk inbox                                          unread notifications, by task
+vk inbox [--full]                                 unread notifications, by task; comments clipped
 vk ack ID...                                      mark a task's notifications read, once handled
 vk labels | vk buckets PROJECT
 vk mkproject "Title" [--parent PROJECT] [-d DESC] [--no-buckets]
