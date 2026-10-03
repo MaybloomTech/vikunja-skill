@@ -117,7 +117,7 @@ destructive changes) still gets it in chat before it is applied.
 Install the plugin (the repo is its own marketplace):
 
 ```
-claude plugin marketplace add git@github.com:MaybloomTech/vikunja-skill.git
+claude plugin marketplace add MaybloomTech/vikunja-skill
 claude plugin install vikunja@vikunja-skill
 ```
 

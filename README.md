@@ -31,12 +31,15 @@ the agent reads them at the start of a session with `vk projects -v`.
 ## Install
 
 ```
-claude plugin marketplace add git@github.com:MaybloomTech/vikunja-skill.git
+claude plugin marketplace add MaybloomTech/vikunja-skill
 claude plugin install vikunja@vikunja-skill
 ```
 
 (or `/plugin marketplace add …` and `/plugin install …` inside a session).
 The skill shows up as `vikunja:vikunja`.
+
+The repository is public and the marketplace is fetched over HTTPS, so a
+machine needs no GitHub credential to install or update it.
 
 Then point the machine at the instance:
 
@@ -88,3 +91,7 @@ claude plugin update vikunja@vikunja-skill
 Changes go through a PR here; `SKILL.md` documents every command, so keep
 it in step with `vk`. `claude plugin validate .` checks the manifests, and
 `claude --plugin-dir .` tries a working copy without installing it.
+
+## License
+
+Apache-2.0; see `LICENSE` and `NOTICE`. Security reports: `SECURITY.md`.
