@@ -33,6 +33,7 @@ def cfg(name, default=None):
 URL = (os.environ.get("VIKUNJA_URL") or cfg("url") or "").rstrip("/")
 TOKEN = os.environ.get("VIKUNJA_TOKEN") or cfg("token")
 DEFAULT_BUCKETS = ["Backlog", "Next", "Doing", "Waiting", "Done"]  # first = default, last = done
+NEXT, DOING, WAITING = DEFAULT_BUCKETS[1:4]  # the columns `vk flight` reads
 STAMP = "last-recent"  # ~/.config/vikunja/last-recent: when `vk recent` last ran on this machine
 CLIP = 240  # chars of a comment `vk recent` shows before pointing at `vk show`
 
@@ -189,6 +190,11 @@ def task_id(s):
     return found[0]["id"]
 
 
+def column(t):
+    """Title of the task's kanban column; "" when the server sent no buckets."""
+    return ((t.get("buckets") or [{}])[0]).get("title") or ""
+
+
 def fmt_task(t, projects=None):
     proj = ""
     if projects:
@@ -197,7 +203,10 @@ def fmt_task(t, projects=None):
     who = ",".join("@" + a["username"] for a in t.get("assignees") or [])
     labels = ",".join(l["title"] for l in t.get("labels") or [])
     due = date(t.get("due_date"))
-    cols = [ref(t), PRIO.get(t.get("priority", 0), ""), proj, who,
+    col = column(t)  # the default column and done tasks say nothing new
+    if t.get("done") or col.lower() == DEFAULT_BUCKETS[0].lower():
+        col = ""
+    cols = [ref(t), PRIO.get(t.get("priority", 0), ""), proj, col, who,
             f"[{labels}]" if labels else "", f"due {due}" if due else "",
             "DONE" if t.get("done") else "", t["title"]]
     return "  ".join(c for c in cols if c)
@@ -280,7 +289,7 @@ def find_bucket(project_id, name):
 
 
 def get_task(tid):
-    r = call("GET", f"/tasks/{tid}")
+    r = call("GET", f"/tasks/{tid}", params={"expand": "buckets"})
     return r.get("task", r) if isinstance(r, dict) and "task" in r else r
 
 
@@ -358,10 +367,13 @@ def cmd_ls(a):
         parts.append(f"assignees in '{a.assignee}'")
     if a.label:
         parts.append(f"labels in {find_label(a.label)['id']}")
-    params = {"sort_by": ["priority", "id"], "order_by": ["desc", "asc"]}
+    params = {"sort_by": ["priority", "id"], "order_by": ["desc", "asc"], "expand": "buckets"}
     if parts:
         params["filter"] = " && ".join(parts)
     tasks = items("/tasks", params)
+    if a.bucket:
+        want = {b.lower() for b in a.bucket}
+        tasks = [t for t in tasks if column(t).lower() in want]
     if a.json:
         print(json.dumps(tasks, indent=1))
         return
@@ -474,6 +486,11 @@ def cmd_mv(a):
     print(f"{ref(t)} -> {b['title']}")
 
 
+def comment_line(c, full=False):
+    who = (c.get("author") or {}).get("username", "?")
+    return f"  > {date(c.get('created'))} {who}: " + clip(to_text(c.get("comment")), full).replace("\n", "\n    ")
+
+
 def cmd_recent(a):
     """What changed since the last run on this machine (or -d DAYS), with the
     comments others wrote in that window. Own comments are noise to the
@@ -486,7 +503,7 @@ def cmd_recent(a):
         since, label = when(cfg(STAMP)), "since the last `vk recent` on this machine"
     else:
         since, label = now - dt.timedelta(days=7), "last 7 days (first run here)"
-    params = {"filter": f"updated >= '{since.strftime('%Y-%m-%dT%H:%M:%SZ')}'", "expand": "comment_count",
+    params = {"filter": f"updated >= '{since.strftime('%Y-%m-%dT%H:%M:%SZ')}'", "expand": ["buckets", "comment_count"],
               "sort_by": ["updated"], "order_by": ["desc"]}
     if a.project:
         p = find_project(a.project, projects)
@@ -503,12 +520,72 @@ def cmd_recent(a):
                         if when(c.get("created")) >= since and (c.get("author") or {}).get("username") != hide]
         print(fmt_task(t, projects) + f"  (upd {date(t.get('updated'))})")
         for c in comments:
-            who = (c.get("author") or {}).get("username", "?")
-            print(f"  > {date(c.get('created'))} {who}: " + clip(to_text(c.get("comment")), a.full).replace("\n", "\n    "))
+            print(comment_line(c, a.full))
     if not a.project:  # a filtered run has not shown everything, so it does not advance the stamp
         os.makedirs(CFG, mode=0o700, exist_ok=True)
         with open(os.path.join(CFG, STAMP), "w") as f:
             f.write(now.isoformat() + "\n")
+
+
+def open_tasks(projects, project=None):
+    """Every open task (children of the project included) with column and comment count."""
+    filt = "done = false"
+    if project:
+        p = find_project(project, projects)
+        ids = [p["id"]] + [c["id"] for c in projects.values() if c["parent"] == p["id"]]
+        filt += " && project in " + ", ".join(map(str, ids))
+    return items("/tasks", {"filter": filt, "expand": ["buckets", "comment_count"]})
+
+
+def ordered(tasks, projects):
+    """Project path, then priority descending, then id."""
+    return sorted(tasks, key=lambda t: ((projects.get(t.get("project_id")) or {}).get("path", "").lower(),
+                                        -(t.get("priority") or 0), t["id"]))
+
+
+def in_columns(tasks, names, projects):
+    names = {n.lower() for n in names}
+    return ordered([t for t in tasks if column(t).lower() in names], projects)
+
+
+def newest_comment(t):
+    """The card's last comment, one request (not items(), which walks every page)."""
+    r = call("GET", f"/tasks/{t['id']}/comments", params={"order_by": "desc", "per_page": 1})
+    found = r if isinstance(r, list) else (r or {}).get("items") or []
+    return found[0] if found else None
+
+
+def cmd_flight(a):
+    """What is in flight: Doing and Waiting with each card's newest comment
+    (whoever wrote it, it is the card's status), what is overdue, what is
+    Next, and other cards that saw a comment lately."""
+    projects = load_projects()
+    tasks = open_tasks(projects, a.project)
+    since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=a.days)
+    today = dt.date.today()
+    sections = []  # (header, [(task, comment)], with the (upd) tag and comment)
+    for name in (DOING, WAITING):
+        cards = in_columns(tasks, [name], projects)
+        sections.append((name.lower(), [(t, newest_comment(t) if t.get("comment_count") else None) for t in cards], True))
+    overdue = ordered([t for t in tasks if date(t.get("due_date")) and when(t["due_date"]).astimezone().date() < today], projects)
+    sections.append(("overdue", [(t, None) for t in overdue], False))
+    sections.append((NEXT.lower(), [(t, None) for t in in_columns(tasks, [NEXT], projects)], False))
+    rest = []
+    for t in ordered([t for t in tasks if column(t).lower() not in {n.lower() for n in (NEXT, DOING, WAITING)}
+                      and t.get("comment_count") and when(t["updated"]) >= since], projects):
+        c = newest_comment(t)
+        if c and when(c["created"]) >= since:
+            rest.append((t, c))
+    sections.append((f"backlog, commented in the last {a.days} day{'' if a.days == 1 else 's'}", rest, True))
+    sections = [s for s in sections if s[1]]
+    for header, rows, detail in sections:
+        print(f"== {header} ({len(rows)})")
+        for t, c in rows:
+            print(fmt_task(t, projects) + (f"  (upd {date(t.get('updated'))})" if detail else ""))
+            if c:
+                print(comment_line(c, a.full))
+    if not sections:
+        print("(nothing in flight)")
 
 
 def unread():
@@ -546,7 +623,7 @@ def cmd_inbox(a):
 
 def cmd_start(a):
     """The session routine in one call: projects with their conventions, the
-    inbox, what changed, my open tasks (and a project's, with -p)."""
+    inbox, what changed, what is in flight, my open tasks (and a project's, with -p)."""
     projects = load_projects()
     who = me().get("username")
     print("== projects (a description is that project's conventions)")
@@ -555,11 +632,17 @@ def cmd_start(a):
     cmd_inbox(argparse.Namespace(full=False))
     print("\n== recent")
     cmd_recent(argparse.Namespace(days=a.days, project=None, mine=False, full=False))
+    print("\n== in flight (`vk flight` shows where each stands)")
+    flying = in_columns(open_tasks(projects), [DOING, WAITING], projects)
+    for t in flying:
+        print(fmt_task(t, projects))
+    if not flying:
+        print(f"(nothing in {DOING} or {WAITING})")
     print(f"\n== open, assigned to @{who}")
-    cmd_ls(argparse.Namespace(all=False, project=None, assignee=who, label=None, json=False))
+    cmd_ls(argparse.Namespace(all=False, project=None, assignee=who, label=None, json=False, bucket=None))
     if a.project:
         print(f"\n== open in {find_project(a.project, projects)['path']}")
-        cmd_ls(argparse.Namespace(all=False, project=a.project, assignee=None, label=None, json=False))
+        cmd_ls(argparse.Namespace(all=False, project=a.project, assignee=None, label=None, json=False, bucket=None))
 
 
 def cmd_ack(a):
@@ -648,10 +731,11 @@ def main():
     s.add_argument("--identifier", help="short task prefix, e.g. LAB: tasks show as LAB-3 (max 10 chars)")
     s.set_defaults(f=cmd_project)
 
-    s = sp.add_parser("ls", help="open tasks, priority first")
+    s = sp.add_parser("ls", help="open tasks, priority first, with their kanban column (not Backlog)")
     s.add_argument("-p", "--project", help="name, Parent/Child, or id; includes children")
     s.add_argument("-a", "--assignee", help="username")
     s.add_argument("-l", "--label")
+    s.add_argument("-b", "--bucket", action="append", help="only tasks in this column (repeatable), e.g. -b Doing -b Waiting")
     s.add_argument("--all", action="store_true", help="include done tasks")
     s.set_defaults(f=cmd_ls)
 
@@ -684,7 +768,10 @@ def main():
     s.add_argument("-d", "--days", type=int, help="a fixed window instead of 'since the last run on this machine'")
     s.add_argument("-p", "--project"); s.add_argument("--mine", action="store_true", help="include my own comments")
     s.add_argument("--full", action="store_true", help="whole comments, not the first two lines"); s.set_defaults(f=cmd_recent)
-    s = sp.add_parser("start", help="the session routine in one call: projects -v, inbox, recent, my open tasks")
+    s = sp.add_parser("flight", help="what is in flight: Doing and Waiting with their newest comment, overdue, Next, recently commented")
+    s.add_argument("-p", "--project"); s.add_argument("-d", "--days", type=int, default=3, help="window for the last section (default 3)")
+    s.add_argument("--full", action="store_true", help="whole comments, not the first two lines"); s.set_defaults(f=cmd_flight)
+    s = sp.add_parser("start", help="the session routine in one call: projects -v, inbox, recent, in flight, my open tasks")
     s.add_argument("-p", "--project", help="also list that project's open tasks")
     s.add_argument("-d", "--days", type=int, help="window for the recent section"); s.set_defaults(f=cmd_start)
     s = sp.add_parser("inbox", help="unread notifications (comments, assignments, mentions), by task; comments clipped")
