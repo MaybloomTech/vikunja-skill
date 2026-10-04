@@ -13,7 +13,7 @@ Never curl the API by hand and never dump raw JSON into the conversation:
 ## Session routine
 
 1. `vk start` once per session (`-p PROJECT` adds that project's open
-   tasks). One call, four sections:
+   tasks). One call, five sections:
    - projects with their descriptions: each says what belongs in it and
      any rules or labels of its own; they override the defaults below.
    - inbox: my account's unread notifications (comments by others,
@@ -27,9 +27,18 @@ Never curl the API by hand and never dump raw JSON into the conversation:
      notify. Comments others wrote are shown clipped; mine are hidden. `vk
      recent -d DAYS` for a fixed window, `--full` for whole comments,
      `--mine` to include my own; `vk show ID` reads one card in full.
+   - in flight: the open cards in Doing or Waiting, one line each; `vk
+     flight` shows where each stands.
    - my open tasks.
+
+   Every task line carries its kanban column, except Backlog (the default)
+   and done cards.
 2. `vk ls -p <project>` for the area at hand, if `start` did not cover it.
-3. Pick up a task: `vk mv <id> Doing` when starting it.
+   When the user asks what is ongoing or in flight, run `vk flight`
+   instead of reading cards one by one.
+3. `vk mv <id> Doing` when starting a task, `vk mv <id> Waiting` (with a
+   comment saying on what) when it is blocked on someone: `vk flight` and
+   `vk start` read those columns.
 4. Ship: `vk done <id> -c "PR #51 merged, deployed 2026-09-16 21:10"`.
    The closing comment is the log: PR numbers, deploy time, what was verified.
 5. Something for a human to decide or do: `vk add`/`vk edit` assigned to
@@ -44,7 +53,7 @@ Never curl the API by hand and never dump raw JSON into the conversation:
 ```
 vk projects [-v]                                  projects as Parent/Child (-v: with descriptions)
 vk project PROJECT [-d DESC] [--identifier LAB]                   one project: description and buckets (-d sets it)
-vk ls [-p PROJECT] [-a USER] [-l LABEL] [--all]   open tasks, priority first
+vk ls [-p PROJECT] [-a USER] [-l LABEL] [-b BUCKET]... [--all]   open tasks, priority first (-b: only that column)
 vk show ID...                                     description + comments
 vk add -p PROJECT "Title" [-d DESC] [-a USER] [-l LABEL] [-P 0-5] [--due YYYY-MM-DD] [-b BUCKET]
 vk edit ID... [-t TITLE] [-d DESC] [-a USER] [--unassign USER] [-l LABEL] [--unlabel LABEL] [-P N] [--due D|none] [-b BUCKET] [-p PROJECT]
@@ -53,6 +62,7 @@ vk comment ID "text"
 vk mv ID BUCKET
 vk start [-p PROJECT] [-d DAYS]                   the session routine in one call (see above)
 vk recent [-d DAYS] [-p PROJECT] [--mine] [--full] changed since the last run here; others' comments, clipped
+vk flight [-p PROJECT] [-d DAYS] [--full]         Doing and Waiting with their newest comment, overdue, Next, recently commented
 vk inbox [--full]                                 unread notifications, by task; comments clipped
 vk ack ID...                                      mark a task's notifications read, once handled
 vk labels | vk buckets PROJECT

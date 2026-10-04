@@ -14,7 +14,11 @@ bin/vk                            the client; on the Bash tool's PATH while the 
 spends a few dozen tokens on the board instead of pages of JSON. Python
 standard library only; Vikunja API v2 (2.4+). One HTTPS connection per
 run, so a command is one name lookup and one handshake however many
-requests it makes. `vk start` is the whole session routine in one call;
+requests it makes. Every task line carries its kanban column (except
+Backlog), `vk ls -b Doing` filters by it, and `vk flight` answers "what is
+in flight?": the cards in Doing and Waiting with their newest comment, what
+is overdue, what is Next, and cards commented on lately. `vk start` is the
+whole session routine in one call, in-flight cards included;
 `vk recent` reports what changed since it last ran on the machine (the
 stamp lives in `~/.config/vikunja/last-recent`) and shows only the
 comments other people wrote, clipped to two lines; `vk inbox` clips the
