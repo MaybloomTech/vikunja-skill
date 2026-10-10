@@ -328,10 +328,12 @@ def cmd_init(a):
     print(f"ok: {len(ps)} projects visible at {URL}")
 
 
-def cmd_projects(a):
+def cmd_projects(a, described=None):
+    """Every project; with -v its description too. described, when given,
+    limits the descriptions to those project ids."""
     for p in sorted(load_projects().values(), key=lambda p: p["path"].lower()):
         print(f"{p['id']:>4}  {p['path']}" + (f"  [{p['identifier']}]" if p["identifier"] else ""))
-        if a.verbose and p["description"]:
+        if a.verbose and p["description"] and (described is None or p["id"] in described):
             print("      " + p["description"].replace("\n", "\n      "))
 
 
@@ -354,8 +356,8 @@ def cmd_project(a):
     print("      buckets: " + ", ".join(names))
 
 
-def cmd_ls(a):
-    projects = load_projects()
+def ls_tasks(a, projects):
+    """The tasks `vk ls` lists for these arguments."""
     parts = []
     if not a.all:
         parts.append("done = false")
@@ -374,6 +376,12 @@ def cmd_ls(a):
     if a.bucket:
         want = {b.lower() for b in a.bucket}
         tasks = [t for t in tasks if column(t).lower() in want]
+    return tasks
+
+
+def cmd_ls(a, tasks=None):
+    projects = load_projects()
+    tasks = ls_tasks(a, projects) if tasks is None else tasks
     if a.json:
         print(json.dumps(tasks, indent=1))
         return
@@ -600,46 +608,87 @@ def unread():
     return by_task
 
 
+def inbox_cards(by_task):
+    """(task id, task or None when deleted, notifications) per unread card.
+    The task is fetched fresh: the snapshot inside a notification can be stale."""
+    cards = []
+    for tid, ns in by_task.items():
+        try:
+            cards.append((tid, get_task(tid), ns))
+        except ApiError:
+            cards.append((tid, None, ns))
+    return cards
+
+
+def note_line(n, full=False):
+    d = n["notification"]
+    who = (d.get("doer") or d.get("assignee") or {}).get("username", "?")
+    c = d.get("comment")
+    what = clip(to_text(c.get("comment")), full).replace("\n", "\n    ") if c else n.get("name", "?")
+    return f"  > {date(n.get('created'))} {who}: {what}"
+
+
+def print_inbox(cards, projects, full=False, brief=False):
+    """One line per card and its notifications. brief: the newest note only,
+    and done cards counted in a footer instead of listed (start's view)."""
+    if not cards:
+        print("(inbox empty)")
+    done = [ns for _, t, ns in cards if brief and t and t.get("done")]
+    for tid, t, ns in cards:
+        if brief and t and t.get("done"):
+            continue
+        print(fmt_task(t, projects) if t else f"#{tid}  (deleted)")
+        for n in ns[-1:] if brief else ns:
+            more = f"  (+{len(ns) - 1} more)" if brief and len(ns) > 1 else ""
+            print(note_line(n, full) + more)
+    if done:
+        print(f"{sum(map(len, done))} notifications on {len(done)} done cards, not shown"
+              " (vk inbox lists them, vk ack ID... clears them)")
+
+
 def cmd_inbox(a):
     """Unread notifications by task. Comments are clipped like in recent: a
     pasted log in one closing comment would otherwise land in every
     session's context on every machine until the card is acked."""
-    projects = load_projects()
-    by_task = unread()
-    if not by_task:
-        print("(inbox empty)")
-    for tid, ns in by_task.items():
-        try:
-            print(fmt_task(get_task(tid), projects))
-        except ApiError:
-            print(f"#{tid}  (deleted)")
-        for n in ns:
-            d = n["notification"]
-            who = (d.get("doer") or d.get("assignee") or {}).get("username", "?")
-            c = d.get("comment")
-            what = clip(to_text(c.get("comment")), a.full).replace("\n", "\n    ") if c else n.get("name", "?")
-            print(f"  > {date(n.get('created'))} {who}: {what}")
+    print_inbox(inbox_cards(unread()), load_projects(), a.full)
+
+
+def lineage(pids, projects):
+    """The project ids plus every ancestor: parents hold rules their children inherit."""
+    out = set()
+    for pid in pids:
+        while pid in projects and pid not in out:
+            out.add(pid)
+            pid = projects[pid]["parent"]
+    return out
 
 
 def cmd_start(a):
-    """The session routine in one call: projects with their conventions, the
-    inbox, what changed, what is in flight, my open tasks (and a project's, with -p)."""
+    """The session routine in one call: projects, the inbox, what changed,
+    what is in flight, my open tasks (and a project's, with -p). The lists
+    are fetched first so only the projects they touch print a description."""
     projects = load_projects()
     who = me().get("username")
-    print("== projects (a description is that project's conventions)")
-    cmd_projects(argparse.Namespace(verbose=True))
-    print("\n== inbox (act, then `vk ack ID`; comments clipped, `vk show ID` reads a card in full)")
-    cmd_inbox(argparse.Namespace(full=False))
+    cards = inbox_cards(unread())
+    flying = in_columns(open_tasks(projects), [DOING, WAITING], projects)
+    mine = argparse.Namespace(all=False, project=None, assignee=who, label=None, json=False, bucket=None)
+    assigned = ls_tasks(mine, projects)
+    touched = [t["project_id"] for _, t, _ in cards if t] + [t["project_id"] for t in flying + assigned]
+    if a.project:
+        touched.append(find_project(a.project, projects)["id"])
+    print("== projects (descriptions shown for the projects touched below; vk project NAME for any other)")
+    cmd_projects(argparse.Namespace(verbose=True), lineage(touched, projects))
+    print("\n== inbox (newest note per card; vk inbox shows all, vk show ID reads a card, vk ack ID once handled)")
+    print_inbox(cards, projects, brief=True)
     print("\n== recent")
     cmd_recent(argparse.Namespace(days=a.days, project=None, mine=False, full=False))
     print("\n== in flight (`vk flight` shows where each stands)")
-    flying = in_columns(open_tasks(projects), [DOING, WAITING], projects)
     for t in flying:
         print(fmt_task(t, projects))
     if not flying:
         print(f"(nothing in {DOING} or {WAITING})")
     print(f"\n== open, assigned to @{who}")
-    cmd_ls(argparse.Namespace(all=False, project=None, assignee=who, label=None, json=False, bucket=None))
+    cmd_ls(mine, assigned)
     if a.project:
         print(f"\n== open in {find_project(a.project, projects)['path']}")
         cmd_ls(argparse.Namespace(all=False, project=a.project, assignee=None, label=None, json=False, bucket=None))
