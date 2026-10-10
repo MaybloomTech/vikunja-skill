@@ -14,14 +14,19 @@ Never curl the API by hand and never dump raw JSON into the conversation:
 
 1. `vk start` once per session (`-p PROJECT` adds that project's open
    tasks). One call, five sections:
-   - projects with their descriptions: each says what belongs in it and
-     any rules or labels of its own; they override the defaults below.
+   - projects: every project's name, and the description of those with a
+     card further down in this output (and their parents, whose rules the
+     children inherit). Each description says what belongs in the project
+     and any rules or labels of its own; they override the defaults below.
+     `vk project NAME` prints any other project's description.
    - inbox: my account's unread notifications (comments by others,
-     assignments, mentions), by task, comments clipped as in recent (`vk
-     inbox --full` for whole ones, `vk show ID` for one card). Act on each
-     (answer, do the work, or file it), then `vk ack <id>` marks them
-     read. Never ack what you have not handled: the read state is shared
-     by every machine, so an ack hides it everywhere.
+     assignments, mentions), by task, showing only the newest one per card,
+     clipped as in recent; cards already done are only counted in a footer.
+     `vk inbox` lists every notification (`--full` for whole comments),
+     `vk show ID` reads one card. Act on each (answer, do the work, or
+     file it), then `vk ack <id>` marks them read. Never ack what you
+     have not handled: the read state is shared by every machine, so an
+     ack hides it everywhere.
    - recent: what changed since `vk recent` last ran on this machine
      (first run: 7 days), including cards humans closed, which do not
      notify. Comments others wrote are shown clipped; mine are hidden. `vk
