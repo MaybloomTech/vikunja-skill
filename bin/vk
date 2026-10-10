@@ -820,7 +820,7 @@ def main():
     s = sp.add_parser("flight", help="what is in flight: Doing and Waiting with their newest comment, overdue, Next, recently commented")
     s.add_argument("-p", "--project"); s.add_argument("-d", "--days", type=int, default=3, help="window for the last section (default 3)")
     s.add_argument("--full", action="store_true", help="whole comments, not the first two lines"); s.set_defaults(f=cmd_flight)
-    s = sp.add_parser("start", help="the session routine in one call: projects -v, inbox, recent, in flight, my open tasks")
+    s = sp.add_parser("start", help="the session routine in one call: projects (descriptions of those touched), inbox (newest note per card), recent, in flight, my open tasks")
     s.add_argument("-p", "--project", help="also list that project's open tasks")
     s.add_argument("-d", "--days", type=int, help="window for the recent section"); s.set_defaults(f=cmd_start)
     s = sp.add_parser("inbox", help="unread notifications (comments, assignments, mentions), by task; comments clipped")
