@@ -642,6 +642,8 @@ def print_inbox(cards, projects, full=False, brief=False):
             more = f"  (+{len(ns) - 1} more)" if brief and len(ns) > 1 else ""
             print(note_line(n, full) + more)
     if done:
+        if len(done) == len(cards):
+            print("(no open cards)")
         print(f"{sum(map(len, done))} notifications on {len(done)} done cards, not shown"
               " (vk inbox lists them, vk ack ID... clears them)")
 
@@ -673,7 +675,7 @@ def cmd_start(a):
     flying = in_columns(open_tasks(projects), [DOING, WAITING], projects)
     mine = argparse.Namespace(all=False, project=None, assignee=who, label=None, json=False, bucket=None)
     assigned = ls_tasks(mine, projects)
-    touched = [t["project_id"] for _, t, _ in cards if t] + [t["project_id"] for t in flying + assigned]
+    touched = [t["project_id"] for _, t, _ in cards if t and not t.get("done")] + [t["project_id"] for t in flying + assigned]
     if a.project:
         touched.append(find_project(a.project, projects)["id"])
     print("== projects (descriptions shown for the projects touched below; vk project NAME for any other)")

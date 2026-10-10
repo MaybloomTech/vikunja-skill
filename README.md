@@ -29,8 +29,9 @@ The skill carries the team-independent part: a session routine, and
 defaults for buckets (`Backlog, Next, Doing, Waiting, Done`, created by
 `vk mkproject`), labels (`decision`, `hands-on`, `waiting`) and how tasks
 are written. What is specific to a team lives on its board: each project's
-description says what goes in it and any rules or labels of its own, and
-the agent reads them at the start of a session with `vk projects -v`.
+description says what goes in it and any rules or labels of its own. `vk
+start` prints the descriptions of the projects the session's cards touch;
+`vk project NAME` prints any other, and `vk projects -v` all of them.
 
 ## Install
 
