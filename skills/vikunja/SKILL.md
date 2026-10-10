@@ -24,8 +24,9 @@ Never curl the API by hand and never dump raw JSON into the conversation:
      clipped as in recent; cards already done are only counted in a footer.
      `vk inbox` lists every notification (`--full` for whole comments),
      `vk show ID` reads one card. Act on each (answer, do the work, or
-     file it), then `vk ack <id>` marks them read. Never ack what you have not handled: the read state is shared
-     by every machine, so an ack hides it everywhere.
+     file it), then `vk ack <id>` marks them read. Never ack what you
+     have not handled: the read state is shared by every machine, so an
+     ack hides it everywhere.
    - recent: what changed since `vk recent` last ran on this machine
      (first run: 7 days), including cards humans closed, which do not
      notify. Comments others wrote are shown clipped; mine are hidden. `vk
