@@ -23,7 +23,10 @@ whole session routine in one call, in-flight cards included;
 stamp lives in `~/.config/vikunja/last-recent`) and shows only the
 comments other people wrote, clipped to two lines; `vk inbox` clips the
 same way, so a pasted log in one comment stays out of every session's
-context.
+context. Dependencies between cards are Vikunja relations, not prose:
+`vk rel ID follows OTHER` (or `--rel follows:OTHER` on `vk add`) writes
+one, and `vk show` prints a card's relations, so a session and any tool
+reading the board see the same record.
 
 The skill carries the team-independent part: a session routine, and
 defaults for buckets (`Backlog, Next, Doing, Waiting, Done`, created by
