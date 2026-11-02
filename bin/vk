@@ -36,12 +36,27 @@ DEFAULT_BUCKETS = ["Backlog", "Next", "Doing", "Waiting", "Done"]  # first = def
 NEXT, DOING, WAITING = DEFAULT_BUCKETS[1:4]  # the columns `vk flight` reads
 STAMP = "last-recent"  # ~/.config/vikunja/last-recent: when `vk recent` last ran on this machine
 CLIP = 240  # chars of a comment `vk recent` shows before pointing at `vk show`
+TITLE = 60  # chars of a related card's title `vk show` prints
+# Vikunja's relation kinds, in the order `vk show` prints them. Each pair is
+# written by the server in both directions (related is its own inverse).
+KINDS = ["parenttask", "subtask", "blocked", "blocking", "follows", "precedes",
+         "duplicateof", "duplicates", "related", "copiedfrom", "copiedto"]
+SYNONYMS = {"parent": "parenttask", "child": "subtask", "blocked-by": "blocked", "blocks": "blocking",
+            "after": "follows", "before": "precedes", "dup-of": "duplicateof"}  # accepted on input only
 
 
 class ApiError(Exception):
+    """code is the HTTP status; vcode Vikunja's own error code from the body
+    (two 404s differ only by it), when the body is its error model."""
     def __init__(self, code, text):
-        super().__init__(f"HTTP {code}: {text}")
-        self.code = code
+        self.code, self.vcode, detail = code, None, None
+        try:
+            body = json.loads(text)
+            self.vcode, detail = body.get("code"), body.get("detail")
+            detail = "; ".join([detail or ""] + [e.get("message", "") for e in body.get("errors") or []]).strip("; ")
+        except (ValueError, AttributeError):
+            pass
+        super().__init__(f"HTTP {code}: {detail or text[:400].strip()}")
 
 
 _conn = None
@@ -78,7 +93,7 @@ def call(method, path, body=None, params=None, ctype="application/json"):
     if r.status == 304:  # Not Modified: the value was already what we asked for
         return None
     if r.status >= 400:
-        raise ApiError(r.status, raw.decode(errors="replace")[:400].strip())
+        raise ApiError(r.status, raw.decode(errors="replace"))
     return json.loads(raw) if raw else None
 
 
@@ -166,10 +181,16 @@ def clip(text, full=False):
     return (out[:CLIP].rstrip() + " ...") if cut else out
 
 
-def ref(t):
+def ref(t, projects=None):
     """The id the web UI shows: LAB-3 when the project has an identifier,
-    otherwise the global #id (the UI's bare #3 is per project, so ambiguous)."""
+    otherwise the global #id (the UI's bare #3 is per project, so ambiguous).
+    The entries of related_tasks come without an identifier: with projects
+    given it is built from the project's prefix and the task's index.
+    load_projects() skips archived projects, so a related card in one is #id."""
     ident = t.get("identifier") or ""
+    if not ident and projects and t.get("index"):
+        prefix = (projects.get(t.get("project_id")) or {}).get("identifier")
+        ident = f"{prefix}-{t['index']}" if prefix else ""
     return ident if ident and not ident.startswith("#") else f"#{t['id']}"
 
 
@@ -188,6 +209,41 @@ def task_id(s):
     if not found:
         raise argparse.ArgumentTypeError(f"no task {s.upper()}")
     return found[0]["id"]
+
+
+def rel_kind(s):
+    """argparse type: one of KINDS, case-insensitive, or a synonym (parent,
+    child, blocked-by, blocks, after, before, dup-of); refused before any
+    request is made."""
+    k = SYNONYMS.get(s.lower(), s.lower())
+    if k not in KINDS:
+        raise argparse.ArgumentTypeError(f"unknown relation kind {s!r}; kinds: " + ", ".join(KINDS)
+                                         + "; also " + ", ".join(f"{a} = {b}" for a, b in SYNONYMS.items()))
+    return k
+
+
+def rel_spec(s):
+    """argparse type for --rel/--unrel: KIND:ID -> (kind, task id). Split on
+    the first colon only: kinds and ids both carry hyphens (blocked-by:LAB-3)."""
+    kind, sep, tid = s.partition(":")
+    if not sep or not tid:
+        raise argparse.ArgumentTypeError(f"not KIND:ID: {s}")
+    return rel_kind(kind), task_id(tid)
+
+
+def relation_lines(t, projects):
+    """One line per relation kind the task has, in KINDS order:
+    `follows: LAB-2 DONE Title...  |  LAB-4 Title`."""
+    out = []
+    for kind in KINDS:
+        entries = []
+        for o in (t.get("related_tasks") or {}).get(kind) or []:
+            title = o.get("title") or ""
+            title = title[:TITLE].rstrip() + "..." if len(title) > TITLE else title
+            entries.append(" ".join(x for x in (ref(o, projects), "DONE" if o.get("done") else "", title) if x))
+        if entries:
+            out.append(f"{kind}: " + "  |  ".join(entries))
+    return out
 
 
 def column(t):
@@ -403,12 +459,52 @@ def cmd_show(a):
         meta = [f"project {p['path']}" if p else "", f"created {date(t.get('created'))}",
                 f"updated {date(t.get('updated'))}", f"done {date(t.get('done_at'))}" if t.get("done") else ""]
         print("  " + " | ".join(m for m in meta if m))
+        for line in relation_lines(t, projects):
+            print("  " + line)
         if t.get("description"):
             print("  " + to_text(t["description"]).replace("\n", "\n  "))
         for c in items(f"/tasks/{tid}/comments", {"order_by": "asc"}):
             who = (c.get("author") or {}).get("username", "?")
             print(f"  > {date(c.get('created'))} {who}: " + to_text(c.get("comment")).replace("\n", "\n    "))
         print()
+
+
+def relate(t, kind, oid, projects):
+    """Write KIND from task t to task oid; the server writes the inverse on
+    the other task. One that already exists (409) is left as it is."""
+    try:
+        call("POST", f"/tasks/{t['id']}/relations", {"other_task_id": oid, "relation_kind": kind})
+    except ApiError as e:
+        if e.code != 409:
+            sys.exit(f"vk: {ref(t)} {kind} #{oid}: {e}")
+    print(f"{ref(t)} {kind} {ref(get_task(oid), projects)}")
+
+
+def unrelate(t, kind, oid, projects):
+    """Remove KIND from task t to task oid and its inverse. One that does not
+    exist (404 with Vikunja's code 4009; a missing task is 4002) says so."""
+    gone = False
+    try:
+        call("DELETE", f"/tasks/{t['id']}/relations/{kind}/{oid}")
+    except ApiError as e:
+        if e.code != 404 or e.vcode != 4009:
+            sys.exit(f"vk: {ref(t)} {kind} #{oid}: {e}")
+        gone = True
+    print(f"{ref(t)} {kind} {ref(get_task(oid), projects)}: " + ("not related" if gone else "removed"))
+
+
+def cmd_rel(a):
+    projects = load_projects()
+    t = get_task(task_id(a.id))
+    for other in a.other:
+        relate(t, a.kind, task_id(other), projects)
+
+
+def cmd_unrel(a):
+    projects = load_projects()
+    t = get_task(task_id(a.id))
+    for other in a.other:
+        unrelate(t, a.kind, task_id(other), projects)
 
 
 def apply_extras(t, a, projects):
@@ -433,6 +529,16 @@ def apply_extras(t, a, projects):
         call("PUT", f"/projects/{pid}/views/{v['id']}/buckets/{b['id']}/tasks", {"task_id": t["id"]})
 
 
+def apply_relations(t, a, projects):
+    """--rel and --unrel, last of all: a refused one exits, so everything
+    else asked for is already on the card. On add the card now exists and
+    the error names it: add the relation with `vk rel`, do not rerun the add."""
+    for kind, oid in (getattr(a, "rel", None) or []):
+        relate(t, kind, oid, projects)
+    for kind, oid in (getattr(a, "unrel", None) or []):
+        unrelate(t, kind, oid, projects)
+
+
 def cmd_add(a):
     projects = load_projects()
     p = find_project(a.project, projects)
@@ -445,6 +551,7 @@ def cmd_add(a):
         body["due_date"] = a.due + "T12:00:00Z" if len(a.due) == 10 else a.due
     t = call("POST", f"/projects/{p['id']}/tasks", body)
     apply_extras(t, a, projects)
+    apply_relations(t, a, projects)
     print(fmt_task(get_task(t["id"]), projects))
 
 
@@ -470,6 +577,7 @@ def cmd_edit(a):
             call("DELETE", f"/tasks/{tid}/assignees/{u['id']}")
         for name in (a.unlabel or []):
             call("DELETE", f"/tasks/{tid}/labels/{find_label(name)['id']}")
+        apply_relations(t, a, projects)
         print(fmt_task(get_task(tid), projects))
 
 
@@ -790,7 +898,7 @@ def main():
     s.add_argument("--all", action="store_true", help="include done tasks")
     s.set_defaults(f=cmd_ls)
 
-    s = sp.add_parser("show", help="task with description and comments")
+    s = sp.add_parser("show", help="task with relations, description and comments")
     s.add_argument("id", nargs="+", type=task_id); s.set_defaults(f=cmd_show)
 
     s = sp.add_parser("add", help="create a task")
@@ -798,15 +906,24 @@ def main():
     s.add_argument("-d", "--desc", help="plain text; blank line = paragraph")
     s.add_argument("-a", "--assignee", action="append"); s.add_argument("-l", "--label", action="append")
     s.add_argument("-P", "--priority", type=int, choices=range(0, 6)); s.add_argument("--due", help="YYYY-MM-DD")
-    s.add_argument("-b", "--bucket"); s.set_defaults(f=cmd_add)
+    s.add_argument("-b", "--bucket"); s.add_argument("--rel", action="append", type=rel_spec, help="KIND:ID, e.g. follows:LAB-3 (repeatable)")
+    s.set_defaults(f=cmd_add)
 
-    s = sp.add_parser("edit", help="change fields, assignees, labels, bucket, project")
+    s = sp.add_parser("edit", help="change fields, assignees, labels, bucket, project, relations")
     s.add_argument("id", nargs="+", type=task_id); s.add_argument("-t", "--title")
     s.add_argument("-d", "--desc"); s.add_argument("-a", "--assignee", action="append")
     s.add_argument("--unassign", action="append"); s.add_argument("-l", "--label", action="append")
     s.add_argument("--unlabel", action="append"); s.add_argument("-P", "--priority", type=int, choices=range(0, 6))
     s.add_argument("--due", help="YYYY-MM-DD or none"); s.add_argument("-b", "--bucket"); s.add_argument("-p", "--project")
+    s.add_argument("--rel", action="append", type=rel_spec, help="KIND:ID, e.g. follows:LAB-3 (repeatable)")
+    s.add_argument("--unrel", action="append", type=rel_spec, help="KIND:ID to remove (repeatable)")
     s.set_defaults(f=cmd_edit)
+
+    kinds = "KIND: " + ", ".join(KINDS) + ", or parent, child, blocked-by, blocks, after, before, dup-of"
+    s = sp.add_parser("rel", help="relate a task to others: vk rel ID follows OTHER... (the inverse is written too)", epilog=kinds)
+    s.add_argument("id"); s.add_argument("kind", type=rel_kind); s.add_argument("other", nargs="+"); s.set_defaults(f=cmd_rel)
+    s = sp.add_parser("unrel", help="remove a relation (and its inverse)", epilog=kinds)
+    s.add_argument("id"); s.add_argument("kind", type=rel_kind); s.add_argument("other", nargs="+"); s.set_defaults(f=cmd_unrel)
 
     s = sp.add_parser("done", help="mark done (optionally with a closing comment)")
     s.add_argument("id", nargs="+", type=task_id); s.add_argument("-c", "--comment")
@@ -843,6 +960,8 @@ def main():
     try:
         a.f(a)
     except ApiError as e:
+        sys.exit(f"vk: {e}")
+    except argparse.ArgumentTypeError as e:  # a task id resolved after parsing (rel, unrel)
         sys.exit(f"vk: {e}")
     except OSError as e:
         sys.exit(f"vk: cannot reach {URL}: {e}")

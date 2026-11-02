@@ -50,8 +50,9 @@ Never curl the API by hand and never dump raw JSON into the conversation:
    them with the right label, and say so in chat once. Do not ask again;
    they mark it done on the board.
 6. New work discovered mid-session: file it right away (`vk add`) in the
-   project whose description fits, do not keep it in memory files. Memory
-   files hold knowledge; the board holds state.
+   project whose description fits, with `--rel follows:ID` (or
+   `blocked:ID`) when it waits on another card; do not keep it in memory
+   files. Memory files hold knowledge; the board holds state.
 
 ## Commands
 
@@ -59,9 +60,11 @@ Never curl the API by hand and never dump raw JSON into the conversation:
 vk projects [-v]                                  projects as Parent/Child (-v: with descriptions)
 vk project PROJECT [-d DESC] [--identifier LAB]                   one project: description and buckets (-d sets it)
 vk ls [-p PROJECT] [-a USER] [-l LABEL] [-b BUCKET]... [--all]   open tasks, priority first (-b: only that column)
-vk show ID...                                     description + comments
-vk add -p PROJECT "Title" [-d DESC] [-a USER] [-l LABEL] [-P 0-5] [--due YYYY-MM-DD] [-b BUCKET]
-vk edit ID... [-t TITLE] [-d DESC] [-a USER] [--unassign USER] [-l LABEL] [--unlabel LABEL] [-P N] [--due D|none] [-b BUCKET] [-p PROJECT]
+vk show ID...                                     relations, description, comments
+vk add -p PROJECT "Title" [-d DESC] [-a USER] [-l LABEL] [-P 0-5] [--due YYYY-MM-DD] [-b BUCKET] [--rel KIND:ID]...
+vk edit ID... [-t TITLE] [-d DESC] [-a USER] [--unassign USER] [-l LABEL] [--unlabel LABEL] [-P N] [--due D|none] [-b BUCKET] [-p PROJECT] [--rel KIND:ID]... [--unrel KIND:ID]...
+vk rel ID KIND OTHER...                           relate ID to each OTHER: vk rel LAB-3 follows LAB-2 (the inverse is written too)
+vk unrel ID KIND OTHER...                         remove the relation and its inverse
 vk done ID... [-c "closing note"] [--undo]
 vk comment ID "text"
 vk mv ID BUCKET
@@ -80,6 +83,12 @@ per-project number, the same thing the web UI shows) or a global `#29` for
 projects without an identifier. Both forms are accepted everywhere; use the
 printed one in chat, comments and PRs so humans can find the card. Set a
 project's prefix with `vk project NAME --identifier LAB`.
+
+KIND is one of Vikunja's relation kinds: `parenttask`, `subtask`,
+`blocked`, `blocking`, `follows`, `precedes`, `duplicateof`, `duplicates`,
+`related`, `copiedfrom`, `copiedto`; `parent`, `child`, `blocked-by`,
+`blocks`, `after`, `before` and `dup-of` are accepted and mapped to them.
+Output always uses Vikunja's names, which the web UI shows too.
 
 PROJECT is a name (`Homelab`), a path (`Team/Homelab`) or an id.
 Descriptions and comments are plain text: blank lines make paragraphs,
@@ -122,6 +131,9 @@ only when the user asks for it.
 **Tasks.** Title = one imperative sentence. Description = the facts needed
 to resume (paths, ids, the verified gotchas). Comments = the log.
 Priority 0-5 is urgency; due dates only when a date is real.
+Dependencies are relations, not prose: a card that must wait for another
+gets `vk rel ID follows OTHER` (or `blocked`), and `vk show` prints them;
+write the reason in the description if it needs one.
 
 **Approval.** A task being on the board is not approval. Anything the
 team treats as needing a human's explicit yes (security trade-offs,
