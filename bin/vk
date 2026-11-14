@@ -211,6 +211,12 @@ def task_id(s):
     return found[0]["id"]
 
 
+def nonneg(s):
+    if not s.isdigit():
+        raise argparse.ArgumentTypeError(f"{s!r} is not a number of comments")
+    return int(s)
+
+
 def rel_kind(s):
     """argparse type: one of KINDS, case-insensitive, or a synonym (parent,
     child, blocked-by, blocks, after, before, dup-of); refused before any
@@ -463,7 +469,12 @@ def cmd_show(a):
             print("  " + line)
         if t.get("description"):
             print("  " + to_text(t["description"]).replace("\n", "\n  "))
-        for c in items(f"/tasks/{tid}/comments", {"order_by": "asc"}):
+        comments = items(f"/tasks/{tid}/comments", {"order_by": "asc"})
+        if a.last is not None and len(comments) > a.last:
+            print(f"  ({len(comments) - a.last} older comment{'s' if len(comments) - a.last != 1 else ''} left out; "
+                  "vk show ID without --last reads all)")
+            comments = comments[len(comments) - a.last:]
+        for c in comments:
             who = (c.get("author") or {}).get("username", "?")
             print(f"  > {date(c.get('created'))} {who}: " + to_text(c.get("comment")).replace("\n", "\n    "))
         print()
@@ -899,7 +910,8 @@ def main():
     s.set_defaults(f=cmd_ls)
 
     s = sp.add_parser("show", help="task with relations, description and comments")
-    s.add_argument("id", nargs="+", type=task_id); s.set_defaults(f=cmd_show)
+    s.add_argument("id", nargs="+", type=task_id)
+    s.add_argument("--last", type=nonneg, metavar="N", help="only the newest N comments (description kept)"); s.set_defaults(f=cmd_show)
 
     s = sp.add_parser("add", help="create a task")
     s.add_argument("-p", "--project", required=True); s.add_argument("title")

@@ -60,7 +60,7 @@ Never curl the API by hand and never dump raw JSON into the conversation:
 vk projects [-v]                                  projects as Parent/Child (-v: with descriptions)
 vk project PROJECT [-d DESC] [--identifier LAB]                   one project: description and buckets (-d sets it)
 vk ls [-p PROJECT] [-a USER] [-l LABEL] [-b BUCKET]... [--all]   open tasks, priority first (-b: only that column)
-vk show ID...                                     relations, description, comments
+vk show ID... [--last N]                          relations, description, comments (--last: only the newest N)
 vk add -p PROJECT "Title" [-d DESC] [-a USER] [-l LABEL] [-P 0-5] [--due YYYY-MM-DD] [-b BUCKET] [--rel KIND:ID]...
 vk edit ID... [-t TITLE] [-d DESC] [-a USER] [--unassign USER] [-l LABEL] [--unlabel LABEL] [-P N] [--due D|none] [-b BUCKET] [-p PROJECT] [--rel KIND:ID]... [--unrel KIND:ID]...
 vk rel ID KIND OTHER...                           relate ID to each OTHER: vk rel LAB-3 follows LAB-2 (the inverse is written too)
