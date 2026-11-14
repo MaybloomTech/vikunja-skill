@@ -324,11 +324,18 @@ def find_user(project_id, name):
     sys.exit(f"no user {name!r} with access to project {project_id}")
 
 
+def split_labels(values):
+    """-l a,b -l c -> [a, b, c]: commas separate labels, blanks are dropped."""
+    return [x.strip() for v in (values or []) for x in v.split(",") if x.strip()]
+
+
 def find_label(title, create=False):
     for l in items("/labels"):
         if l["title"].lower() == title.lower():
             return l
     if create:
+        if "," in title:  # lookups above may find an old comma-titled label; creating one is refused
+            sys.exit(f"label {title!r} holds a comma; labels are separate names, e.g. -l a,b")
         return call("POST", "/labels", {"title": title})
     sys.exit(f"no label {title!r}; try `vk labels`")
 
@@ -528,7 +535,7 @@ def apply_extras(t, a, projects):
         except ApiError as e:
             if e.code != 400:
                 raise  # 400 = already assigned
-    for name in (a.label or []):
+    for name in split_labels(a.label):
         l = find_label(name, create=True)
         try:
             call("POST", f"/tasks/{t['id']}/labels", {"label_id": l["id"]})
@@ -586,8 +593,12 @@ def cmd_edit(a):
         for name in (a.unassign or []):
             u = find_user(t["project_id"], name)
             call("DELETE", f"/tasks/{tid}/assignees/{u['id']}")
-        for name in (a.unlabel or []):
-            call("DELETE", f"/tasks/{tid}/labels/{find_label(name)['id']}")
+        for name in split_labels(a.unlabel):
+            l = find_label(name)
+            if l["id"] not in {x["id"] for x in get_task(tid).get("labels") or []}:
+                print(f"{ref(t)} does not have label {l['title']!r}; nothing to remove", file=sys.stderr)
+                continue
+            call("DELETE", f"/tasks/{tid}/labels/{l['id']}")
         apply_relations(t, a, projects)
         print(fmt_task(get_task(tid), projects))
 
@@ -824,6 +835,16 @@ def cmd_ack(a):
 
 
 def cmd_labels(a):
+    if a.delete:
+        l = find_label(a.delete.strip())
+        used = items("/tasks", {"filter": f"labels in {l['id']}"})
+        if used:
+            sys.exit(f"vk: label {l['title']!r} is on {len(used)} task{'s' if len(used) != 1 else ''}; "
+                     "remove it from them (vk edit ID --unlabel NAME) first; "
+                     f"`vk ls --all -l {l['title']}` lists them (the count is of tasks this account can see)")
+        call("DELETE", f"/labels/{l['id']}")
+        print(f"deleted label {l['id']} {l['title']}")
+        return
     for l in items("/labels"):
         print(f"{l['id']:>4}  {l['title']}")
 
@@ -916,7 +937,7 @@ def main():
     s = sp.add_parser("add", help="create a task")
     s.add_argument("-p", "--project", required=True); s.add_argument("title")
     s.add_argument("-d", "--desc", help="plain text; blank line = paragraph")
-    s.add_argument("-a", "--assignee", action="append"); s.add_argument("-l", "--label", action="append")
+    s.add_argument("-a", "--assignee", action="append"); s.add_argument("-l", "--label", action="append", help="label; commas separate several (a,b), repeatable")
     s.add_argument("-P", "--priority", type=int, choices=range(0, 6)); s.add_argument("--due", help="YYYY-MM-DD")
     s.add_argument("-b", "--bucket"); s.add_argument("--rel", action="append", type=rel_spec, help="KIND:ID, e.g. follows:LAB-3 (repeatable)")
     s.set_defaults(f=cmd_add)
@@ -924,8 +945,8 @@ def main():
     s = sp.add_parser("edit", help="change fields, assignees, labels, bucket, project, relations")
     s.add_argument("id", nargs="+", type=task_id); s.add_argument("-t", "--title")
     s.add_argument("-d", "--desc"); s.add_argument("-a", "--assignee", action="append")
-    s.add_argument("--unassign", action="append"); s.add_argument("-l", "--label", action="append")
-    s.add_argument("--unlabel", action="append"); s.add_argument("-P", "--priority", type=int, choices=range(0, 6))
+    s.add_argument("--unassign", action="append"); s.add_argument("-l", "--label", action="append", help="label; commas separate several (a,b), repeatable")
+    s.add_argument("--unlabel", action="append", help="label to remove; commas separate several"); s.add_argument("-P", "--priority", type=int, choices=range(0, 6))
     s.add_argument("--due", help="YYYY-MM-DD or none"); s.add_argument("-b", "--bucket"); s.add_argument("-p", "--project")
     s.add_argument("--rel", action="append", type=rel_spec, help="KIND:ID, e.g. follows:LAB-3 (repeatable)")
     s.add_argument("--unrel", action="append", type=rel_spec, help="KIND:ID to remove (repeatable)")
@@ -959,7 +980,8 @@ def main():
     s = sp.add_parser("ack", help="mark a task's notifications read, once handled")
     s.add_argument("id", nargs="+", type=task_id); s.set_defaults(f=cmd_ack)
 
-    s = sp.add_parser("labels", help="list labels"); s.set_defaults(f=cmd_labels)
+    s = sp.add_parser("labels", help="list labels, or delete an unused one")
+    s.add_argument("--delete", metavar="NAME", help="delete this label; refused while any task uses it"); s.set_defaults(f=cmd_labels)
     s = sp.add_parser("buckets", help="kanban buckets of a project"); s.add_argument("project"); s.set_defaults(f=cmd_buckets)
     s = sp.add_parser("mkproject", help="create a project with the default buckets")
     s.add_argument("title"); s.add_argument("--parent"); s.add_argument("-d", "--desc", help="what goes in it")

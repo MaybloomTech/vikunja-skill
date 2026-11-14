@@ -61,8 +61,8 @@ vk projects [-v]                                  projects as Parent/Child (-v: 
 vk project PROJECT [-d DESC] [--identifier LAB]                   one project: description and buckets (-d sets it)
 vk ls [-p PROJECT] [-a USER] [-l LABEL] [-b BUCKET]... [--all]   open tasks, priority first (-b: only that column)
 vk show ID... [--last N]                          relations, description, comments (--last: only the newest N)
-vk add -p PROJECT "Title" [-d DESC] [-a USER] [-l LABEL] [-P 0-5] [--due YYYY-MM-DD] [-b BUCKET] [--rel KIND:ID]...
-vk edit ID... [-t TITLE] [-d DESC] [-a USER] [--unassign USER] [-l LABEL] [--unlabel LABEL] [-P N] [--due D|none] [-b BUCKET] [-p PROJECT] [--rel KIND:ID]... [--unrel KIND:ID]...
+vk add -p PROJECT "Title" [-d DESC] [-a USER] [-l LABEL[,LABEL]...] [-P 0-5] [--due YYYY-MM-DD] [-b BUCKET] [--rel KIND:ID]...
+vk edit ID... [-t TITLE] [-d DESC] [-a USER] [--unassign USER] [-l LABEL[,LABEL]...] [--unlabel LABEL[,LABEL]...] [-P N] [--due D|none] [-b BUCKET] [-p PROJECT] [--rel KIND:ID]... [--unrel KIND:ID]...
 vk rel ID KIND OTHER...                           relate ID to each OTHER: vk rel LAB-3 follows LAB-2 (the inverse is written too)
 vk unrel ID KIND OTHER...                         remove the relation and its inverse
 vk done ID... [-c "closing note"] [--undo]
@@ -73,7 +73,8 @@ vk recent [-d DAYS] [-p PROJECT] [--mine] [--full] changed since the last run he
 vk flight [-p PROJECT] [-d DAYS] [--full]         Doing and Waiting with their newest comment, overdue, Next, recently commented
 vk inbox [--full]                                 unread notifications, by task; comments clipped
 vk ack ID...                                      mark a task's notifications read, once handled
-vk labels | vk buckets PROJECT
+vk labels [--delete NAME]                         list labels; --delete only if no task uses it
+vk buckets PROJECT
 vk mkproject "Title" [--parent PROJECT] [-d DESC] [--no-buckets]
 vk mkbucket PROJECT Name... [--done Name] [--default Name]
 ```
