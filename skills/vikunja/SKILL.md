@@ -78,6 +78,9 @@ vk mkproject "Title" [--parent PROJECT] [-d DESC] [--no-buckets]
 vk mkbucket PROJECT Name... [--done Name] [--default Name]
 ```
 
+Write serially: parallel `vk` writes (ten `vk done` at once) can return
+HTTP 500 for some of them; each succeeds when retried on its own.
+
 ID is what `vk` prints: `LAB-3` (the project's identifier plus the
 per-project number, the same thing the web UI shows) or a global `#29` for
 projects without an identifier. Both forms are accepted everywhere; use the
